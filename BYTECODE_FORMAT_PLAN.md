@@ -556,11 +556,22 @@ latency promise is inferred from one machine.
 | --- | --- |
 | B0 — Reopen with evidence | Complete |
 | B1 — Lowered IR boundary | Complete |
-| B2 — Experimental `bytecode/0` | Pending |
+| B2 — Experimental `bytecode/0` | Complete |
 | B3 — Complete semantics | Pending |
 | B4 — CLI and external WASM | Pending |
 | B5 — Single-WASM build | Pending |
 | B6 — Freeze or stop | Pending |
+
+### `bytecode/0` implementation note
+
+The experimental implementation deliberately starts with one required
+lowered-grammar section containing canonical tagged records. The fixed header,
+directory, little-endian integers, exact runtime fingerprint, semantic/content
+hash separation, owned decoding, and public limits are implemented. The
+provisional multi-table and fixed-width instruction layout above remains a
+candidate for `bytecode/1`, not an accidental promise: measurements in B4–B6
+will determine whether splitting the canonical payload pays for its additional
+format surface.
 
 ### Milestone B0 — Reopen the decision with evidence
 

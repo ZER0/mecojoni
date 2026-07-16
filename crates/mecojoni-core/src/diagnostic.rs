@@ -85,6 +85,14 @@ impl DiagnosticCode {
     pub const fn as_str(self) -> &'static str {
         self.0
     }
+
+    pub(crate) fn artifact_warning(name: &str) -> Option<Self> {
+        match name {
+            "W_COMPOSITION_SHELL" => Some(Self::COMPOSITION_SHELL),
+            "W_RECURSION_RISK" => Some(Self::RECURSION_RISK),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -24,7 +24,8 @@ mod span;
 mod value;
 
 pub use artifact::{
-    ArtifactDebugProfile, ArtifactLimits, ArtifactOptions, BYTECODE_VERSION, LOWERED_IR_CONTRACT,
+    ArtifactDebugProfile, ArtifactLimits, ArtifactMetadata, ArtifactOptions, BYTECODE_VERSION,
+    LOWERED_IR_CONTRACT, decode_artifact, disassemble_artifact, encode_artifact, inspect_artifact,
 };
 pub use ast::{
     ArgumentSyntax, BindingSyntax, BlockChomp, BlockSyntax, BodyPartSyntax, BodySyntax, CallSyntax,

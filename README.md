@@ -30,6 +30,11 @@ and reliable long-running generation.
 > [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md); recorded evidence lives in
 > [`BENCHMARKS.md`](BENCHMARKS.md).
 
+The current Rust API can canonically `encode_artifact`, `decode_artifact`,
+`inspect_artifact`, and `disassemble_artifact`. `bytecode/0` is exact-build
+coupled and hostile-input checked; applications must not treat it as a frozen
+distribution contract yet.
+
 The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
 with every syntax change; if the documents temporarily disagree, this README wins.
 

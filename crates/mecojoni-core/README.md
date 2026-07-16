@@ -10,6 +10,12 @@ and cached static selections before generation can observe it. Public artifact
 policy types define bounded `full`, `mapped`, and `stripped` profiles for the
 experimental `bytecode/0` implementation.
 
+`encode_artifact`, `decode_artifact`, `inspect_artifact`, and
+`disassemble_artifact` provide the owned Rust artifact API. Decoding is bounded
+by `ArtifactLimits`, checks the exact experimental runtime fingerprint and
+content hash, reconstructs no source AST, and returns a grammar only after the
+shared lowered verifier succeeds.
+
 ```rust
 use mecojoni_core::{
     GenerationRequest, PackageInput, PackageSource, SourceFile, SourceId,

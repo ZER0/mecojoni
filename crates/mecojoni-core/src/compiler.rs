@@ -207,7 +207,7 @@ pub struct RuleAnalysis {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledPart {
+pub(crate) enum CompiledPart {
     Literal {
         text: String,
         span: Span,
@@ -235,20 +235,20 @@ enum CompiledPart {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledValue {
+pub(crate) enum CompiledValue {
     Input(usize),
     Local(usize),
     Constant(Value),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledWeight {
+pub(crate) enum CompiledWeight {
     Static(Rational),
     Dynamic(CompiledWeightExpression),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledWeightExpression {
+pub(crate) enum CompiledWeightExpression {
     Literal(Rational),
     Value(CompiledValue),
     Add(Box<Self>, Box<Self>),
@@ -257,13 +257,13 @@ enum CompiledWeightExpression {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledGuardValue {
+pub(crate) enum CompiledGuardValue {
     Value(CompiledValue),
     Constant(Value),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledGuard {
+pub(crate) enum CompiledGuard {
     Value(CompiledGuardValue),
     Is(CompiledGuardValue, CompiledGuardValue),
     IsNot(CompiledGuardValue, CompiledGuardValue),
@@ -277,28 +277,28 @@ enum CompiledGuard {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledBinding {
-    rule: usize,
-    arguments: Vec<CompiledValue>,
-    slot: usize,
-    name: String,
-    span: Span,
+pub(crate) struct CompiledBinding {
+    pub(crate) rule: usize,
+    pub(crate) arguments: Vec<CompiledValue>,
+    pub(crate) slot: usize,
+    pub(crate) name: String,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledProduction {
-    id: String,
-    authored_id: bool,
-    span: Span,
-    weight: CompiledWeight,
-    guard: Option<CompiledGuard>,
-    bindings: Vec<CompiledBinding>,
-    parts: Vec<CompiledPart>,
-    diversity_factor_16_16: u32,
+pub(crate) struct CompiledProduction {
+    pub(crate) id: String,
+    pub(crate) authored_id: bool,
+    pub(crate) span: Span,
+    pub(crate) weight: CompiledWeight,
+    pub(crate) guard: Option<CompiledGuard>,
+    pub(crate) bindings: Vec<CompiledBinding>,
+    pub(crate) parts: Vec<CompiledPart>,
+    pub(crate) diversity_factor_16_16: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ValueType {
+pub(crate) enum ValueType {
     Text,
     Number,
     Boolean,
@@ -317,26 +317,26 @@ impl ValueType {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledInput {
-    external_name: String,
-    type_: ValueType,
+pub(crate) struct CompiledInput {
+    pub(crate) external_name: String,
+    pub(crate) type_: ValueType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledRule {
-    name: String,
-    parameters: Vec<(String, ValueType)>,
-    span: Span,
-    productions: Vec<CompiledProduction>,
-    static_selection: Option<StaticSelection>,
-    analysis: RuleAnalysis,
-    message_effect: bool,
+pub(crate) struct CompiledRule {
+    pub(crate) name: String,
+    pub(crate) parameters: Vec<(String, ValueType)>,
+    pub(crate) span: Span,
+    pub(crate) productions: Vec<CompiledProduction>,
+    pub(crate) static_selection: Option<StaticSelection>,
+    pub(crate) analysis: RuleAnalysis,
+    pub(crate) message_effect: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StaticSelection {
-    cumulative: Vec<u64>,
-    total: u64,
+pub(crate) struct StaticSelection {
+    pub(crate) cumulative: Vec<u64>,
+    pub(crate) total: u64,
 }
 
 impl StaticSelection {
@@ -346,20 +346,101 @@ impl StaticSelection {
     }
 }
 
+fn validate_value_operand(
+    value: &CompiledValue,
+    input_count: usize,
+    local_count: usize,
+) -> MecoResult<()> {
+    let valid = match value {
+        CompiledValue::Input(index) => *index < input_count,
+        CompiledValue::Local(index) => *index < local_count,
+        CompiledValue::Constant(_) => true,
+    };
+    if !valid {
+        return Err(runtime_error(
+            DiagnosticCode::BYTECODE_CORRUPT,
+            "lowered value operand references a missing slot",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_weight_operands(
+    weight: &CompiledWeight,
+    input_count: usize,
+    local_count: usize,
+) -> MecoResult<()> {
+    fn expression(
+        value: &CompiledWeightExpression,
+        input_count: usize,
+        local_count: usize,
+    ) -> MecoResult<()> {
+        match value {
+            CompiledWeightExpression::Literal(_) => Ok(()),
+            CompiledWeightExpression::Value(value) => {
+                validate_value_operand(value, input_count, local_count)
+            }
+            CompiledWeightExpression::Add(left, right)
+            | CompiledWeightExpression::Subtract(left, right)
+            | CompiledWeightExpression::Multiply(left, right) => {
+                expression(left, input_count, local_count)?;
+                expression(right, input_count, local_count)
+            }
+        }
+    }
+    match weight {
+        CompiledWeight::Static(_) => Ok(()),
+        CompiledWeight::Dynamic(value) => expression(value, input_count, local_count),
+    }
+}
+
+fn validate_guard_operands(
+    guard: &CompiledGuard,
+    input_count: usize,
+    local_count: usize,
+) -> MecoResult<()> {
+    fn value(value: &CompiledGuardValue, input_count: usize, local_count: usize) -> MecoResult<()> {
+        match value {
+            CompiledGuardValue::Value(value) => {
+                validate_value_operand(value, input_count, local_count)
+            }
+            CompiledGuardValue::Constant(_) => Ok(()),
+        }
+    }
+    match guard {
+        CompiledGuard::Value(operand) => value(operand, input_count, local_count),
+        CompiledGuard::Is(left, right)
+        | CompiledGuard::IsNot(left, right)
+        | CompiledGuard::Less(left, right)
+        | CompiledGuard::LessOrEqual(left, right)
+        | CompiledGuard::Greater(left, right)
+        | CompiledGuard::GreaterOrEqual(left, right) => {
+            value(left, input_count, local_count)?;
+            value(right, input_count, local_count)
+        }
+        CompiledGuard::Not(value) => validate_guard_operands(value, input_count, local_count),
+        CompiledGuard::And(left, right) | CompiledGuard::Or(left, right) => {
+            validate_guard_operands(left, input_count, local_count)?;
+            validate_guard_operands(right, input_count, local_count)
+        }
+    }
+}
+
 /// Immutable, indexed package artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledGrammar {
-    artifact_hash: u64,
-    rules: Vec<CompiledRule>,
-    inputs: Vec<CompiledInput>,
-    entries: Vec<(String, usize)>,
-    default_entry: Option<usize>,
-    warnings: Vec<Diagnostic>,
-    message_manifest: MessageManifest,
+    pub(crate) artifact_hash: u64,
+    pub(crate) rules: Vec<CompiledRule>,
+    pub(crate) inputs: Vec<CompiledInput>,
+    pub(crate) entries: Vec<(String, usize)>,
+    pub(crate) default_entry: Option<usize>,
+    pub(crate) warnings: Vec<Diagnostic>,
+    pub(crate) message_manifest: MessageManifest,
 }
 
 impl CompiledGrammar {
     /// Verifies the immutable lowered representation shared by all loaders.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn validate_lowered_invariants(&self) -> MecoResult<()> {
         let rule_count = self.rules.len();
         if self.entries.iter().any(|(_, rule)| *rule >= rule_count)
@@ -368,6 +449,30 @@ impl CompiledGrammar {
             return Err(runtime_error(
                 DiagnosticCode::BYTECODE_CORRUPT,
                 "lowered entry references a missing rule",
+            ));
+        }
+        if self.rules.iter().enumerate().any(|(index, rule)| {
+            self.rules[..index]
+                .iter()
+                .any(|other| other.name == rule.name)
+        }) || self
+            .entries
+            .iter()
+            .enumerate()
+            .any(|(index, (name, _))| self.entries[..index].iter().any(|(other, _)| other == name))
+        {
+            return Err(runtime_error(
+                DiagnosticCode::BYTECODE_CORRUPT,
+                "lowered rule or entry names are not unique",
+            ));
+        }
+        if self
+            .default_entry
+            .is_some_and(|default| !self.entries.iter().any(|(_, rule)| *rule == default))
+        {
+            return Err(runtime_error(
+                DiagnosticCode::BYTECODE_CORRUPT,
+                "lowered default entry is not public",
             ));
         }
         for rule in &self.rules {
@@ -403,6 +508,83 @@ impl CompiledGrammar {
                         DiagnosticCode::BYTECODE_CORRUPT,
                         "lowered production references a missing rule",
                     ));
+                }
+                let parameter_slots = rule.parameters.len();
+                validate_weight_operands(&production.weight, self.inputs.len(), parameter_slots)?;
+                if let Some(guard) = &production.guard {
+                    validate_guard_operands(guard, self.inputs.len(), parameter_slots)?;
+                }
+                let mut local_slots = parameter_slots;
+                for binding in &production.bindings {
+                    if binding.slot != local_slots
+                        || binding.arguments.len() != self.rules[binding.rule].parameters.len()
+                    {
+                        return Err(runtime_error(
+                            DiagnosticCode::BYTECODE_CORRUPT,
+                            "lowered binding slots or call arity are inconsistent",
+                        ));
+                    }
+                    for value in &binding.arguments {
+                        validate_value_operand(value, self.inputs.len(), local_slots)?;
+                    }
+                    local_slots += 1;
+                }
+                for part in &production.parts {
+                    match part {
+                        CompiledPart::Literal { .. } => {}
+                        CompiledPart::RuleCall {
+                            rule, arguments, ..
+                        } => {
+                            if arguments.len() != self.rules[*rule].parameters.len() {
+                                return Err(runtime_error(
+                                    DiagnosticCode::BYTECODE_CORRUPT,
+                                    "lowered rule-call arity is inconsistent",
+                                ));
+                            }
+                            for value in arguments {
+                                validate_value_operand(value, self.inputs.len(), local_slots)?;
+                            }
+                        }
+                        CompiledPart::Value { value, .. } => {
+                            validate_value_operand(value, self.inputs.len(), local_slots)?;
+                        }
+                        CompiledPart::Capture { rule, slot, .. } => {
+                            if *slot != local_slots || !self.rules[*rule].parameters.is_empty() {
+                                return Err(runtime_error(
+                                    DiagnosticCode::BYTECODE_CORRUPT,
+                                    "lowered capture slot or arity is inconsistent",
+                                ));
+                            }
+                            local_slots += 1;
+                        }
+                        CompiledPart::MessageCall { id, arguments, .. } => {
+                            let Some(schema) = self
+                                .message_manifest
+                                .messages
+                                .iter()
+                                .find(|message| message.id == *id)
+                            else {
+                                return Err(runtime_error(
+                                    DiagnosticCode::BYTECODE_CORRUPT,
+                                    "lowered message call has no manifest schema",
+                                ));
+                            };
+                            if arguments.len() != schema.arguments.len()
+                                || arguments
+                                    .iter()
+                                    .zip(&schema.arguments)
+                                    .any(|((name, _), schema)| name != &schema.name)
+                            {
+                                return Err(runtime_error(
+                                    DiagnosticCode::BYTECODE_CORRUPT,
+                                    "lowered message arguments do not match the manifest",
+                                ));
+                            }
+                            for (_, value) in arguments {
+                                validate_value_operand(value, self.inputs.len(), local_slots)?;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1405,6 +1587,17 @@ pub fn compile_package_with_manifest(
 ) -> MecoResult<CompiledGrammar> {
     validate_message_manifest(manifest)?;
     validate_package_input(package)?;
+    if !package
+        .modules
+        .windows(2)
+        .all(|pair| pair[0].canonical_id < pair[1].canonical_id)
+    {
+        let mut canonical = package.clone();
+        canonical
+            .modules
+            .sort_by(|left, right| left.canonical_id.cmp(&right.canonical_id));
+        return compile_package_with_manifest(&canonical, manifest);
+    }
     let mut modules = Vec::with_capacity(package.modules.len());
     for package_source in &package.modules {
         modules.push(ModuleBuild {
