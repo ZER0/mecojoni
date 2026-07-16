@@ -1,0 +1,121 @@
+rule pickup()
+  p0 w=3 id=- c=[] b=MC:pickup-common(player=$playerName,count=$itemCount)
+  p1 w=1 id=- c=[G:Is(Name("mood"), Name("tense"))] b=MC:pickup-alert(player=$playerName,count=$itemCount)
+rule local-intro()
+  p0 w=1 id=- c=[] b=C:common.name>hero L:" arrived. " V:hero L:" looked tired."
+rule localized-arrival()
+  p0 w=1 id=- c=[B:common.name>hero] b=MC:arrival(hero=$hero)
+rule localized-encounter()
+  p0 w=1 id=- c=[B:common.name>hero,B:common.name>companion,B:common.place>destination] b=MC:encounter(hero=$hero~,companion=$companion~,destination=$destination~)
+rule title-suffix()
+  p0 w=3 id=- c=[] b=EMPTY
+  p1 w=1 id=- c=[] b=L:" the " R:common.title
+rule multiline-example()
+  p0 w=1 id=- c=[] b=BLOCK:cooked:clip:"First line.\nSecond line.\n"
+rule tense-arrival()
+  p0 w=1 id=- c=[G:Is(Name("mood"), Name("tense")),B:common.name>hero] b=MC:arrival(hero=$hero~)
+rule tense-arrival-with-companion()
+  p0 w=1 id=- c=[G:Is(Name("mood"), Name("tense")),B:common.name>hero,B:common.name>companion] b=MC:arrival(hero=$hero,companion=$companion~)
+rule greeting()
+  p0 w=3 id=- c=[] b=R:salutation L:", " R:person L:"!"
+  p1 w=1 id=- c=[] b=R:person L:", " R:observation L:"."
+rule greetings(name:text)
+  p0 w=1 id=- c=[] b=L:"Hello, " V:name L:"!"
+  p1 w=1 id=- c=[] b=L:"Welcome back, " V:name L:"!"
+rule player-greeting()
+  p0 w=1 id=- c=[] b=RC:greetings(name=$playerName)
+rule warning()
+  p0 w=1 id=- c=[] b=L:"Attention, " R:person L:": " R:observation L:"."
+rule salutation()
+  p0 w=1 id=- c=[] b=L:"Hello"
+  p1 w=1 id=- c=[] b=L:"Good morning"
+  p2 w=1 id=- c=[] b=L:"Welcome"
+rule person()
+  p0 w=1 id=- c=[] b=L:"traveller"
+  p1 w=1 id=- c=[] b=L:"neighbour"
+  p2 w=1 id=- c=[] b=L:"old friend"
+rule observation()
+  p0 w=1 id=- c=[] b=L:"the weather has changed"
+  p1 w=1 id=- c=[] b=L:"the market is unusually quiet"
+  p2 w=1 id=- c=[] b=L:"today feels promising"
+rule sentence()
+  p0 w=1 id=- c=[] b=R:subject L:" " R:predicate L:"."
+rule subject()
+  p0 w=1 id=- c=[] b=L:"The pilot"
+  p1 w=1 id=- c=[] b=L:"A maintenance drone"
+rule predicate()
+  p0 w=1 id=- c=[] b=L:"is waiting"
+  p1 w=1 id=- c=[] b=L:"found the missing tool"
+rule temperature()
+  p0 w=1 id=- c=[] b=L:"cold"
+  p1 w=1 id=- c=[] b=L:"mild"
+  p2 w=1 id=- c=[] b=L:"uncomfortably warm"
+rule report()
+  p0 w=1 id=- c=[] b=L:"The " R:device L:" is " R:condition L:"."
+rule device()
+  p0 w=1 id=- c=[] b=L:"air recycler"
+  p1 w=1 id=- c=[] b=L:"navigation console"
+rule condition()
+  p0 w=1 id=- c=[] b=L:"offline"
+  p1 w=1 id=- c=[] b=L:"making a strange noise"
+rule weighted-mood()
+  p0 w=6 id=- c=[] b=L:"calm"
+  p1 w=3 id=- c=[] b=L:"tired"
+  p2 w=1 id=- c=[] b=L:"furious"
+  p3 w=1/2 id=- c=[] b=L:"cautiously optimistic"
+rule titled-greeting()
+  p0 w=1 id=- c=[] b=L:"Welcome, " R:name R:title-option L:"."
+rule title-option()
+  p0 w=3 id=- c=[] b=EMPTY
+  p1 w=1 id=- c=[] b=L:" the " R:title
+rule name()
+  p0 w=1 id=- c=[] b=L:"Ada"
+  p1 w=1 id=- c=[] b=L:"Tomas"
+rule title()
+  p0 w=1 id=- c=[] b=L:"Captain"
+  p1 w=1 id=- c=[] b=L:"Doctor"
+rule creature-count()
+  p0 w=1 id=- c=[] b=L:"Several " R:creature L:"s arrived."
+rule creature()
+  p0 w=1 id=- c=[] b=L:"traveller"
+  p1 w=1 id=- c=[] b=L:"maintenance drone"
+rule inventory()
+  p0 w=5 id=- c=[] b=R:item
+  p1 w=1 id=- c=[] b=R:item L:", " R:inventory
+rule item()
+  p0 w=1 id=- c=[] b=L:"a coil of wire"
+  p1 w=1 id=- c=[] b=L:"a repair kit"
+  p2 w=1 id=- c=[] b=L:"an empty canister"
+rule calm-line()
+  p0 w=1 id=- c=[] b=L:"Everything is under control."
+rule contact()
+  p0 w=1 id=- c=[] b=L:"Send a message to pilot" L:"@" L:"example.invalid."
+rule raw-contact()
+  p0 w=1 id=- c=[] b=L:"Send a message to pilot@example.invalid."
+rule raw-sigils()
+  p0 w=1 id=- c=[] b=BLOCK:raw:strip:"@person, $playerName, and &pickup-alert are literal text."
+rule incident()
+  p0 w=1 id=- c=[] b=R:repair-incident
+  p1 w=1 id=- c=[] b=R:travel-incident
+rule repair-incident()
+  p0 w=1 id=- c=[] b=R:technician L:" " R:repair-action L:" " R:broken-device L:"."
+rule travel-incident()
+  p0 w=1 id=- c=[] b=R:traveller L:" " R:travel-action L:" " R:destination L:"."
+rule technician()
+  p0 w=1 id=- c=[] b=L:"The mechanic"
+  p1 w=1 id=- c=[] b=L:"A service drone"
+rule repair-action()
+  p0 w=1 id=- c=[] b=L:"inspected"
+  p1 w=1 id=- c=[] b=L:"repaired"
+rule broken-device()
+  p0 w=1 id=- c=[] b=L:"the air recycler"
+  p1 w=1 id=- c=[] b=L:"the navigation console"
+rule traveller()
+  p0 w=1 id=- c=[] b=L:"The courier"
+  p1 w=1 id=- c=[] b=L:"A survey team"
+rule travel-action()
+  p0 w=1 id=- c=[] b=L:"departed for"
+  p1 w=1 id=- c=[] b=L:"finally reached"
+rule destination()
+  p0 w=1 id=- c=[] b=L:"the northern outpost"
+  p1 w=1 id=- c=[] b=L:"the orbital terminal"

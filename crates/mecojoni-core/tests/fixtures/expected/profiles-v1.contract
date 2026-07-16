@@ -1,0 +1,5 @@
+location/1 candidates=12 gap=1 horizon=4 cooldown=3/4 edges=3..8 internal=2 edge_window=300 exact_window=50000
+interactive/1 weighted candidates=1 depth=80 expansions=2000 scalars=16384 sampler=8192 aggregate_expansions=2000 aggregate_sampler=8192 rendered_scalars=16384 rendered_bytes=65536 formatter=10000
+interactive/1 diverse candidates=12 depth=80 expansions=2000 scalars=16384 sampler=8192 aggregate_expansions=24000 aggregate_sampler=98304 rendered_scalars=16384 rendered_bytes=65536 formatter=10000
+composition/1 references=3 literal_words=2 messages_exempt=true
+location/1 math factor(1)=65536 factor(2)=92681 factor(32768)=262144 cooldown(1)=1/4 cooldown(2)=1/2 cooldown(3)=3/4 cooldown(4)=1

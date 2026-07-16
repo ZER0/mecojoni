@@ -1,12 +1,14 @@
 # Mecojoni v2 Specification and Runtime Design
 
 > This document is the target design, not a claim that every feature already
-> exists. The portable workspace foundation and strict front-matter parser are
-> implemented; completion is tracked in `ROADMAP.md`.
+> exists. The portable workspace, source parser, deterministic primitives,
+> package boundary, and initial audit are implemented; completion is tracked in
+> `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
-companion. Any syntax change must update all affected documents in the same
-change; if they temporarily conflict, the README wins.
+companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
+update all affected documents in the same change; if they temporarily conflict,
+the README wins.
 
 ## Design position
 
@@ -348,10 +350,9 @@ is no silent compare-and-swap retry against changed history.
 ## Language design
 
 The following author-facing syntax records the current format-2 proposal and the
-examples agreed during review. The implemented front-matter subset is formalized
-in `V2_SYNTAX.md`; the production language remains a draft until its complete
-lexer, EBNF, whitespace rules, and conformance fixtures are published and pass an
-independent implementation.
+examples agreed during review. The implemented grammar is formalized in
+`V2_SYNTAX.md` and checked against the README corpus plus parser-independent valid,
+invalid, exact-diagnostic, and AST fixtures.
 
 ```meco
 ---
@@ -714,6 +715,22 @@ zero makes that production ineligible, while a negative, non-finite, or overflow
 result is a typed generation error. If every guard-eligible production evaluates to
 zero, generation returns `E_NO_ELIGIBLE_PRODUCTION`.
 
+The initial numeric compatibility contract is `rational/1`. A value is a reduced
+signed fraction `(numerator, denominator)`: the numerator's absolute value and the
+positive denominator are each at most `2^63 - 1`. Source decimals use
+`[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?`, with canonical integer leading zeroes, at
+most 18 mantissa digits, and a parsed exponent in `-18..=18`. `+`, `-`, and `*`
+use checked integer intermediates, reduce after every operation, and return
+`E_WEIGHT_OVERFLOW` when the reduced result exceeds the budget. There is no
+rounding, subnormal value, infinity, or `NaN`.
+
+For one selection, the compiler/evaluator converts the eligible reduced fractions
+to integer weights using their checked least common denominator, divides all
+scaled integers by their common greatest divisor, and requires the scaled total to
+be at most `2^63 - 1`. A static package that violates this rule fails compilation;
+a request whose dynamic values violate it fails generation. Zero values are
+removed before this conversion.
+
 Under `weighted/1`, an evaluated value is the exact relative weight. Under
 `diverse/1`, it is the base weight before hard-gap filtering, soft cooldown, and
 diversity adjustment. The authored expression, evaluated rational value, and final
@@ -796,6 +813,25 @@ rejection-step budgets recorded in the receipt. Exhaustion returns
 `E_SAMPLER_BUDGET` and rolls back; it never falls back to a biased choice. Forced-
 rejection conformance fixtures cover accepted outcomes and deterministic bounded
 failure.
+
+#### Deterministic random stream
+
+Sampler compatibility version `splitmix64/1` maps a `u64` seed directly to its
+initial 64-bit state and a zero word cursor. For every requested word it adds
+`0x9e3779b97f4a7c15` modulo `2^64`, then applies, in order:
+
+```text
+z = (z xor (z >> 30)) * 0xbf58476d1ce4e5b9 mod 2^64
+z = (z xor (z >> 27)) * 0x94d049bb133111eb mod 2^64
+result = z xor (z >> 31)
+```
+
+To sample `0 <= x < upper`, let `threshold = (-upper mod 2^64) mod upper`.
+Draw words until one is at least `threshold`, then return `word mod upper`.
+`upper = 0` is invalid. Crossing the applicable word budget fails with
+`E_SAMPLER_BUDGET`; it never substitutes modulo-biased output. Session snapshots
+record both state and word cursor. The seed-zero vectors checked into the
+integration corpus are normative for native, WASM, Deno, and replay tooling.
 
 ## Compiler graph and recursion analysis
 
@@ -1112,6 +1148,16 @@ source. The report includes the qualified rule, production ID, source span, dire
 emitting-reference count, longest literal run, and failed condition. It never
 claims that a production is bad prose. `meco audit --composition` prints the report
 but exits successfully unless the caller has explicitly requested warning failures.
+
+Its tokenizer is `scalar-word/1`, shared with the initial structural fragment
+contract. ASCII letters, digits, and underscore are word scalars. Every non-ASCII
+scalar is a word scalar except the explicitly pinned separator/punctuation ranges
+`U+0085`, `U+00A0`, `U+1680`, `U+2000–U+206F`, `U+2E00–U+2E7F`,
+`U+3000–U+303F`, `U+FE10–U+FE1F`, `U+FE30–U+FE4F`, `U+FF01–U+FF0F`,
+`U+FF1A–U+FF20`, `U+FF3B–U+FF40`, and `U+FF5B–U+FF65`. A word is a maximal
+run of word scalars. This deliberately simple classification is independent of
+changing host Unicode tables; improving it requires a new tokenizer/profile
+version and replay-visible migration.
 
 Useful lints include:
 

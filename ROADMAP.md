@@ -27,28 +27,28 @@ specification, fixtures, and parser tests agree.
 
 Translate the prose design into artifacts an implementation can test.
 
-- [ ] Publish normative lexical rules and EBNF matching the README corpus.
+- [x] Publish normative lexical rules and EBNF matching the README corpus.
 - [x] Specify strict front-matter fields and indentation rules without depending
   on a YAML implementation.
-- [ ] Specify ASCII identifiers, qualified names, reference boundaries, comments,
+- [x] Specify ASCII identifiers, qualified names, reference boundaries, comments,
   string escapes, raw strings, block chomping, weights, and empty output.
-- [ ] Specify guards, bindings, captures, typed parameters, `<-` argument punning,
+- [x] Specify guards, bindings, captures, typed parameters, `<-` argument punning,
   and complete-message effects.
 - [x] Define source span coordinates, diagnostic structure, and initial stable
   error-code families.
-- [ ] Define the exact numeric representation and accepted syntax for weights.
-- [ ] Select and specify the deterministic PRNG and seed-to-state algorithm.
-- [ ] Implement and fixture the `location/1` diverse profile, `interactive/1`
+- [x] Define the exact numeric representation and accepted syntax for weights.
+- [x] Select and specify the deterministic PRNG and seed-to-state algorithm.
+- [x] Specify and fixture the `location/1` diverse profile, `interactive/1`
   resource profile, and their replay-visible fixed-point/tokenizer details.
-- [ ] Implement and fixture the `composition/1` audit heuristic and its
+- [x] Specify and fixture the `composition/1` audit heuristic and its
   message-body exemption.
-- [ ] Implement and fixture text/JSONL CLI streams, exit statuses, and
+- [x] Specify and fixture text/JSONL CLI streams, exit statuses, and
   warning-failure policy.
-- [ ] Define host-supplied package loading and import resolution without core I/O.
-- [ ] Draft the versioned handwritten WASM ABI, ownership rules, handle lifecycle,
+- [x] Define host-supplied package loading and import resolution without core I/O.
+- [x] Draft the versioned handwritten WASM ABI, ownership rules, handle lifecycle,
   allocator boundary, and JavaScript error model.
 - [x] Record the minimum supported Rust version and edition.
-- [ ] Create parser-independent valid and invalid conformance fixtures.
+- [x] Create parser-independent valid and invalid conformance fixtures.
 
 **Exit gate:** every syntax example in the README has one predicted AST and every
 invalid fixture has an expected error code and precise span.
@@ -76,18 +76,18 @@ allocator, and an integration test reads a real fixture from disk.
 
 Implement source processing without generation shortcuts.
 
-- [ ] Validate UTF-8 and normalize physical line endings.
+- [x] Validate UTF-8 and normalize physical line endings.
 - [ ] Lex front matter, headings, productions, weights, comments, sigils,
   bindings, guards, calls, strings, raw strings, and block literals.
-- [ ] Preserve exact byte and Unicode-scalar source coordinates.
+- [x] Preserve exact byte and Unicode-scalar source coordinates.
 - [x] Parse strict front matter without general YAML features.
-- [ ] Parse rules, typed parameter headings, productions, expressions, references,
+- [x] Parse rules, typed parameter headings, productions, expressions, references,
   captures, bindings, message calls, and multiline argument lists.
 - [ ] Recover from independent syntax errors and aggregate diagnostics where safe.
-- [ ] Reject invalid ASCII identifiers while preserving arbitrary UTF-8 terminal
+- [x] Reject invalid ASCII identifiers while preserving arbitrary UTF-8 terminal
   text exactly.
 - [ ] Add unit tests for every token and AST form.
-- [ ] Add filesystem integration fixtures covering complete single-file sources,
+- [x] Add filesystem integration fixtures covering complete single-file sources,
   malformed inputs, CRLF, Unicode text, and exact diagnostics.
 
 **Exit gate:** the full README corpus parses, canonical invalid fixtures fail with

@@ -1,0 +1,7 @@
+generate.text.success|text+LF|trace|0
+report.text.success|report|diagnostics|0
+jsonl.success|object-per-line|notices|0
+domain.failure|no-partial-record|diagnostics|1
+warning-threshold|report-if-complete|warnings|1
+usage-or-io|none|diagnostic|2
+internal|none|diagnostic|3

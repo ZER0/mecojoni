@@ -14,9 +14,10 @@ context-free grammarâ€”headings define rules and list items define alternativesâ
 while adding the structure needed for game data, conditions, reuse, localization,
 and reliable long-running generation.
 
-> **Status:** v2 is in early implementation. The portable Rust/WASM foundation
-> and strict front-matter parser build; the production language and runtime are
-> not implemented yet. The runnable proof of concept and its original
+> **Status:** v2 is in early implementation. The portable Rust/WASM foundation,
+> strict source parser, exact numeric/PRNG contracts, package boundary, and first
+> audit build; the compiler and generation runtime are not implemented yet. The
+> runnable proof of concept and its original
 > documentation live in
 > [`v1/`](v1/README.md).
 
@@ -499,6 +500,13 @@ literals, number inputs/parameters, parentheses, `+`, `-`, and `*`; they cannot 
 captures, generated rules, messages, callbacks, clocks, or ambient state. This
 keeps the result deterministic and replayable.
 
+Version `rational/1` evaluates those values exactly as reduced signed fractions:
+the absolute numerator and positive denominator are each at most `2^63 - 1`.
+Decimal literals contain at most 18 digits and an optional exponent from `-18` to
+`18`; an operation or per-rule scaled total outside the budget is an error rather
+than a floating-point approximation. Version `splitmix64/1` supplies the seeded
+random stream, whose fixed vectors are shared by Rust and the future Deno wrapper.
+
 An entire production containing `""` emits nothing:
 
 ```meco
@@ -669,6 +677,8 @@ performance constraints, and implementation phases are in
 [V2_SPECIFICATION.md](V2_SPECIFICATION.md).
 The formal lexical and strict front-matter grammar is in
 [V2_SYNTAX.md](V2_SYNTAX.md).
+The host package, WASM ownership/handle, JavaScript error, and CLI stream contracts
+are in [V2_INTERFACES.md](V2_INTERFACES.md).
 The implementation order and completion gates are tracked in
 [ROADMAP.md](ROADMAP.md).
 
@@ -677,7 +687,8 @@ The implementation order and completion gates are tracked in
 ```text
 README.md                    V2 overview and canonical syntax corpus
 V2_SPECIFICATION.md          Detailed v2 specification and implementation plan
-V2_SYNTAX.md                 Normative lexical and front-matter grammar
+V2_SYNTAX.md                 Normative lexical and complete source grammar
+V2_INTERFACES.md             Package, WASM, JavaScript, and CLI contracts
 ROADMAP.md                   Phased implementation plan and completion gates
 Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
 crates/
@@ -694,13 +705,13 @@ v1/
 ## Current limitations
 
 The implementation currently provides owned UTF-8 sources, dual byte/scalar
-spans, structured diagnostics and results, strict front-matter parsing, a
-version-discovery WASM ABI, and build/test coverage across native, bare `no_std`,
-and `wasm32-unknown-unknown` targets. The production-body lexer/parser, compiler,
-generator, formatter adapter, complete buffer/handle ABI, JavaScript wrapper,
-CLI, and editor tooling still need to be built and verified against the
-conformance suite. Until then, use v1 for executable language experiments and
-treat v2 source as the design target.
+spans, structured diagnostics/results, complete source parsing, exact rational
+and PRNG primitives, host-supplied package validation, versioned profile records,
+the composition audit, a version-discovery WASM ABI, and target-spanning tests.
+Parser recovery, cooked-block interpolation, the compiler, generator, formatter
+adapter, complete buffer/handle ABI, JavaScript wrapper, CLI, and editor tooling
+still need to be built and verified. Until then, use v1 for executable generation
+experiments and treat v2 source as the compiler target.
 
 ## Name
 

@@ -19,6 +19,24 @@ impl DiagnosticCode {
     pub const HEADER_VALUE: Self = Self("E_HEADER_VALUE");
     pub const UNSUPPORTED_VERSION: Self = Self("E_UNSUPPORTED_VERSION");
     pub const INVALID_IDENTIFIER: Self = Self("E_INVALID_IDENTIFIER");
+    pub const COMMENT_SYNTAX: Self = Self("E_COMMENT_SYNTAX");
+    pub const RULE_SYNTAX: Self = Self("E_RULE_SYNTAX");
+    pub const DUPLICATE_RULE: Self = Self("E_DUPLICATE_RULE");
+    pub const PRODUCTION_SYNTAX: Self = Self("E_PRODUCTION_SYNTAX");
+    pub const WEIGHT_SYNTAX: Self = Self("E_WEIGHT_SYNTAX");
+    pub const CLAUSE_ORDER: Self = Self("E_CLAUSE_ORDER");
+    pub const GUARD_SYNTAX: Self = Self("E_GUARD_SYNTAX");
+    pub const BINDING_SYNTAX: Self = Self("E_BINDING_SYNTAX");
+    pub const BODY_SYNTAX: Self = Self("E_BODY_SYNTAX");
+    pub const STRING_SYNTAX: Self = Self("E_STRING_SYNTAX");
+    pub const ESCAPE_SYNTAX: Self = Self("E_ESCAPE_SYNTAX");
+    pub const CALL_SYNTAX: Self = Self("E_CALL_SYNTAX");
+    pub const ARGUMENT_SYNTAX: Self = Self("E_ARGUMENT_SYNTAX");
+    pub const BLOCK_SYNTAX: Self = Self("E_BLOCK_SYNTAX");
+    pub const COMPOSITION_SHELL: Self = Self("W_COMPOSITION_SHELL");
+    pub const PACKAGE_ROOT: Self = Self("E_PACKAGE_ROOT");
+    pub const PACKAGE_DUPLICATE_MODULE: Self = Self("E_PACKAGE_DUPLICATE_MODULE");
+    pub const IMPORT_RESOLUTION: Self = Self("E_IMPORT_RESOLUTION");
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
