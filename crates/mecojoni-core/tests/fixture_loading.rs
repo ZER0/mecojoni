@@ -2,10 +2,10 @@ use std::{fs, path::PathBuf};
 
 use mecojoni_core::{
     ArgumentSyntax, BlockChomp, BodyPartSyntax, BodySyntax, ClauseSyntax, CompositionProfile,
-    LocationProfile, PackageInput, PackageSource, Rational, ResolvedImport, ResourceProfile,
-    SourceFile, SourceId, SplitMix64, ValueSyntax, WeightSyntax, audit_composition,
-    diversity_factor_16_16, location_cooldown_multiplier, parse_front_matter, parse_module,
-    validate_package_input,
+    GenerationLimits, GenerationRequest, LocationProfile, PackageInput, PackageSource, Rational,
+    ResolvedImport, ResourceProfile, SourceFile, SourceId, SplitMix64, ValueSyntax, WeightSyntax,
+    audit_composition, compile_package, diversity_factor_16_16, location_cooldown_multiplier,
+    parse_front_matter, parse_module, validate_package_input,
 };
 use std::str::FromStr;
 
@@ -96,6 +96,207 @@ fn loads_every_module_in_a_real_package_from_the_filesystem() {
         modules,
     };
     validate_package_input(&package).expect("host-supplied package graph validates");
+    let grammar = compile_package(&package).expect("filesystem package compiles");
+    let result = grammar
+        .generate_weighted(&GenerationRequest {
+            entry: Some("fixture.greeting"),
+            seed: 0,
+            limits: GenerationLimits::default(),
+        })
+        .expect("filesystem package generates");
+    assert_eq!(result.text(), "Hello, world!");
+}
+
+fn load_weighted_package() -> PackageInput {
+    let directory = fixture_path("packages/weighted");
+    let root_path = directory.join("root.meco.md");
+    let common_path = directory.join("common.meco.md");
+    PackageInput {
+        root_id: "root".to_string(),
+        modules: vec![
+            PackageSource {
+                canonical_id: "root".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(0),
+                    root_path.display().to_string(),
+                    fs::read_to_string(root_path).expect("read weighted root"),
+                ),
+                resolved_imports: vec![ResolvedImport {
+                    authored_path: "./common.meco.md".to_string(),
+                    target_id: "common".to_string(),
+                }],
+            },
+            PackageSource {
+                canonical_id: "common".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(1),
+                    common_path.display().to_string(),
+                    fs::read_to_string(common_path).expect("read weighted common"),
+                ),
+                resolved_imports: vec![],
+            },
+        ],
+    }
+}
+
+#[test]
+fn weighted_package_matches_the_seeded_filesystem_corpus() {
+    let package = load_weighted_package();
+    let grammar = compile_package(&package).expect("weighted package compiles");
+    let actual = (0..16_u64)
+        .map(|seed| {
+            let result = grammar
+                .generate_weighted(&GenerationRequest::with_seed(seed))
+                .expect("seeded generation succeeds");
+            format!(
+                "{seed}|{}|{}|{}",
+                result.text(),
+                result.expansions(),
+                result.sampler_words()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = fs::read_to_string(fixture_path("expected/weighted-seeds-v1.outputs"))
+        .expect("read weighted output corpus");
+
+    assert_eq!(actual, expected.trim_end());
+    let explicit = |entry, seed| {
+        grammar
+            .generate_weighted(&GenerationRequest {
+                entry: Some(entry),
+                seed,
+                limits: GenerationLimits::default(),
+            })
+            .expect("explicit entry generates")
+    };
+    assert!((0..64).any(|seed| explicit("weighted.empty", seed).text().is_empty()));
+    assert_eq!(explicit("weighted.literals", 0).text(), "quoted @raw");
+    assert_eq!(explicit("weighted.raw-block", 0).text(), "@literal");
+    assert!(!explicit("weighted.recursive", 0).text().is_empty());
+}
+
+#[test]
+fn weighted_selection_matches_its_relative_probability_in_a_seed_corpus() {
+    let package = load_weighted_package();
+    let grammar = compile_package(&package).expect("weighted package compiles");
+    let quiet = (0..4_096_u64)
+        .filter(|seed| {
+            grammar
+                .generate_weighted(&GenerationRequest::with_seed(*seed))
+                .expect("statistical corpus generation succeeds")
+                .text()
+                == "A quiet scene."
+        })
+        .count();
+
+    assert!((850..=1_200).contains(&quiet), "quiet count was {quiet}");
+}
+
+#[test]
+fn deep_filesystem_grammar_uses_the_heap_stack_and_exact_limits() {
+    let path = fixture_path("packages/deep/root.meco.md");
+    let package = PackageInput {
+        root_id: "deep".to_string(),
+        modules: vec![PackageSource {
+            canonical_id: "deep".to_string(),
+            source: SourceFile::new(
+                SourceId::new(0),
+                path.display().to_string(),
+                fs::read_to_string(path).expect("read deep grammar"),
+            ),
+            resolved_imports: vec![],
+        }],
+    };
+    let grammar = compile_package(&package).expect("deep grammar compiles iteratively");
+    let limited = grammar
+        .generate_weighted(&GenerationRequest::with_seed(0))
+        .expect_err("interactive depth limit is exact");
+    assert_eq!(limited.diagnostics()[0].code().as_str(), "E_LIMIT_DEPTH");
+
+    let result = grammar
+        .generate_weighted(&GenerationRequest {
+            entry: None,
+            seed: 0,
+            limits: GenerationLimits {
+                max_depth: 2_048,
+                max_expansions: 2_048,
+                ..GenerationLimits::default()
+            },
+        })
+        .expect("looser named test limits permit the whole chain");
+    assert_eq!(result.text(), "finished");
+    assert_eq!(result.expansions(), 2_048);
+    assert_eq!(result.sampler_words(), 2_048);
+}
+
+fn load_compiler_invalid_package(case: &str) -> PackageInput {
+    let directory = fixture_path(&format!("packages/compiler-invalid/{case}"));
+    let root_path = directory.join("root.meco.md");
+    let mut modules = vec![PackageSource {
+        canonical_id: "root".to_string(),
+        source: SourceFile::new(
+            SourceId::new(0),
+            root_path.display().to_string(),
+            fs::read_to_string(&root_path).expect("read invalid compiler root"),
+        ),
+        resolved_imports: vec![],
+    }];
+    if case != "undefined" {
+        let common_path = directory.join("common.meco.md");
+        modules.push(PackageSource {
+            canonical_id: "common".to_string(),
+            source: SourceFile::new(
+                SourceId::new(1),
+                common_path.display().to_string(),
+                fs::read_to_string(common_path).expect("read invalid compiler dependency"),
+            ),
+            resolved_imports: vec![],
+        });
+        modules[0].resolved_imports.push(ResolvedImport {
+            authored_path: "./common.meco.md".to_string(),
+            target_id: "common".to_string(),
+        });
+        if case == "cycle" {
+            modules[1].resolved_imports.push(ResolvedImport {
+                authored_path: "./root.meco.md".to_string(),
+                target_id: "root".to_string(),
+            });
+        }
+    }
+    PackageInput {
+        root_id: "root".to_string(),
+        modules,
+    }
+}
+
+#[test]
+fn compiler_failures_match_codes_and_spans_from_filesystem_packages() {
+    let expected = fs::read_to_string(fixture_path("expected/compiler-invalid-v1.diags"))
+        .expect("read compiler diagnostic contract");
+    let mut actual = Vec::new();
+    for case in ["undefined", "private", "cycle"] {
+        let package = load_compiler_invalid_package(case);
+        let error = compile_package(&package).expect_err("compiler fixture must fail");
+        let diagnostic = &error.diagnostics()[0];
+        let source_slice = diagnostic.span().map_or_else(
+            || "<none>".to_string(),
+            |diagnostic_span| {
+                let source = &package.modules
+                    [usize::try_from(diagnostic_span.source().get()).expect("source ID fits")]
+                .source;
+                let start = usize::try_from(diagnostic_span.start().byte()).expect("start fits");
+                let end = usize::try_from(diagnostic_span.end().byte()).expect("end fits");
+                source.text()[start..end].to_string()
+            },
+        );
+        actual.push(format!(
+            "{case}|{}|{source_slice}",
+            diagnostic.code().as_str()
+        ));
+    }
+
+    assert_eq!(actual.join("\n"), expected.trim_end());
 }
 
 #[test]

@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod ast;
 mod audit;
+mod compiler;
 mod diagnostic;
 mod error;
 mod front_matter;
@@ -23,6 +24,10 @@ pub use ast::{
 };
 pub use audit::{
     CompositionFinding, WORD_TOKENIZER_VERSION, audit_composition, composition_profile_version,
+};
+pub use compiler::{
+    CompiledGrammar, GenerationLimits, GenerationRequest, GenerationResult, RuleAnalysis,
+    WEIGHTED_SAMPLER_VERSION, compile_package,
 };
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use error::{MecoError, MecoResult};

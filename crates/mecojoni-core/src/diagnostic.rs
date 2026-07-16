@@ -37,6 +37,22 @@ impl DiagnosticCode {
     pub const PACKAGE_ROOT: Self = Self("E_PACKAGE_ROOT");
     pub const PACKAGE_DUPLICATE_MODULE: Self = Self("E_PACKAGE_DUPLICATE_MODULE");
     pub const IMPORT_RESOLUTION: Self = Self("E_IMPORT_RESOLUTION");
+    pub const MODULE_IDENTITY: Self = Self("E_MODULE_IDENTITY");
+    pub const IMPORT_CYCLE: Self = Self("E_IMPORT_CYCLE");
+    pub const EXPORT: Self = Self("E_EXPORT");
+    pub const ENTRY: Self = Self("E_ENTRY");
+    pub const UNDEFINED_RULE: Self = Self("E_UNDEFINED_RULE");
+    pub const RULE_VISIBILITY: Self = Self("E_RULE_VISIBILITY");
+    pub const RULE_ARITY: Self = Self("E_RULE_ARITY");
+    pub const UNSUPPORTED_FEATURE: Self = Self("E_UNSUPPORTED_FEATURE");
+    pub const WEIGHT_OVERFLOW: Self = Self("E_WEIGHT_OVERFLOW");
+    pub const UNPRODUCTIVE_RULE: Self = Self("E_UNPRODUCTIVE_RULE");
+    pub const NO_ENTRY: Self = Self("E_NO_ENTRY");
+    pub const LIMIT_DEPTH: Self = Self("E_LIMIT_DEPTH");
+    pub const LIMIT_EXPANSIONS: Self = Self("E_LIMIT_EXPANSIONS");
+    pub const LIMIT_OUTPUT: Self = Self("E_LIMIT_OUTPUT");
+    pub const SAMPLER_BUDGET: Self = Self("E_SAMPLER_BUDGET");
+    pub const RECURSION_RISK: Self = Self("W_RECURSION_RISK");
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {

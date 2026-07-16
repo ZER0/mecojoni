@@ -10,7 +10,9 @@
 
 Parser fixtures cover exact single diagnostics as well as ordered recovery from
 multiple independent errors. Cooked and raw block fixtures assert both normalized
-text and parsed interpolation parts.
+text and parsed interpolation parts. Compiler fixtures cover host-resolved
+multi-file packages, visibility and cycle failures, fixed weighted seed corpora,
+relative-frequency checks, and a 2,048-rule heap-stack chain.
 
 Tests must read these artifacts through `std::fs`. The production core receives
 owned source modules from the host and never performs filesystem I/O.

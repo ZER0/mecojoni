@@ -706,12 +706,17 @@ v1/
 
 The implementation currently provides owned UTF-8 sources, dual byte/scalar
 spans, ordered multi-error diagnostics, complete source parsing including cooked
-block interpolation, exact rational and PRNG primitives, host-supplied package
-validation, versioned profile records, the composition audit, a
-version-discovery WASM ABI, and target-spanning tests. The compiler, generator,
-formatter adapter, complete buffer/handle ABI, JavaScript wrapper, CLI, and editor
-tooling still need to be built and verified. Until then, use v1 for executable
-generation experiments and treat v2 source as the compiler target.
+block interpolation, immutable multi-module compilation, exact `weighted/1`
+generation, iterative graph analysis/expansion, deterministic work limits,
+versioned profile records, the composition audit, a version-discovery WASM ABI,
+and target-spanning tests. The current executable subset supports static weights,
+ordinary references, literal/quoted/raw/block text, empty output, public entries,
+and productive recursion. Types, request data, dynamic weights, guards, bindings,
+captures, and complete messages are parsed but deliberately return
+`E_UNSUPPORTED_FEATURE` from compilation until their milestones implement their
+runtime semantics. The complete buffer/handle ABI, JavaScript wrapper, CLI, and
+editor tooling also remain to be built. Use v1 for features outside this weighted
+v2 subset.
 
 ## Name
 

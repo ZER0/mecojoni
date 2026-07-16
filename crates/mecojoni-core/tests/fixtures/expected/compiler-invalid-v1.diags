@@ -1,0 +1,3 @@
+undefined|E_UNDEFINED_RULE|missing
+private|E_RULE_VISIBILITY|common.secret
+cycle|E_IMPORT_CYCLE|<none>

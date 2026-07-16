@@ -97,21 +97,21 @@ their expected diagnostics, and parser code builds as `no_std + alloc`.
 
 Deliver the first useful vertical slice through the Rust API.
 
-- [ ] Accept package sources and canonical module IDs supplied by the host.
-- [ ] Resolve modules, aliases, exports, optional default entry, rule references,
+- [x] Accept package sources and canonical module IDs supplied by the host.
+- [x] Resolve modules, aliases, exports, optional default entry, rule references,
   and visibility.
-- [ ] Build immutable indexed IR without exposing mutable internal collections.
-- [ ] Validate duplicate and undefined names, rule arity, public entries, and
+- [x] Build immutable indexed IR without exposing mutable internal collections.
+- [x] Validate duplicate and undefined names, rule arity, public entries, and
   malformed weights.
-- [ ] Compute reachability, productivity, nullable rules, recursive components,
+- [x] Compute reachability, productivity, nullable rules, recursive components,
   and recursion-risk diagnostics with iterative graph algorithms.
-- [ ] Implement exact bounded relative weights and unbiased `weighted/1` choice.
-- [ ] Implement the specified deterministic PRNG.
-- [ ] Expand with an explicit stack and exact depth, expansion, and output limits.
-- [ ] Support literal text, ordinary references, quoted/raw/block text, empty
+- [x] Implement exact bounded relative weights and unbiased `weighted/1` choice.
+- [x] Implement the specified deterministic PRNG.
+- [x] Expand with an explicit stack and exact depth, expansion, and output limits.
+- [x] Support literal text, ordinary references, quoted/raw/block text, empty
   output, and productive recursion.
-- [ ] Expose compile and weighted-generation APIs from Rust.
-- [ ] Add deterministic seeded corpora, statistical weight checks, deep-recursion
+- [x] Expose compile and weighted-generation APIs from Rust.
+- [x] Add deterministic seeded corpora, statistical weight checks, deep-recursion
   fixtures, and adversarial limit tests.
 
 **Exit gate:** real multi-file fixtures compile from disk in integration tests;

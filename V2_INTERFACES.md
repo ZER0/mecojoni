@@ -36,6 +36,26 @@ root, and sorted resolution edges, so a host resolution change is observable.
 Initial format 2 rejects import cycles. Rule recursion within the resolved package
 remains legal subject to graph analysis and runtime limits.
 
+## Rust weighted API (`weighted/1`)
+
+`compile_package(&PackageInput)` parses and resolves the complete package into a
+private indexed `CompiledGrammar`. Public queries expose entry names, a default
+entry, immutable rule-analysis facts, and compiler warnings without exposing
+mutable rule or production collections. The first executable subset includes
+static exact weights, ordinary rule references, all literal/block forms, empty
+output, and productive recursion. Parsed later-phase features fail compilation
+with `E_UNSUPPORTED_FEATURE` until their runtime contracts are implemented.
+
+`CompiledGrammar::generate_weighted(&GenerationRequest)` is stateless. A request
+contains a seed, an optional qualified public entry, and explicit depth,
+expansion, output-scalar, output-byte, and sampler-word limits. Omitting the entry
+uses the root default or returns `E_NO_ENTRY`. Each rule selection—including a
+single-production rule—uses unbiased `splitmix64/1` rejection sampling and
+therefore consumes at least one PRNG word. Expansion uses heap frames with a body
+cursor, so native call-stack depth and production width do not define language
+limits. `GenerationResult` returns text, the resolved entry, and exact expansion
+and sampler-word counters.
+
 ## WebAssembly ABI (`meco-wasm/1`)
 
 The adapter targets `wasm32-unknown-unknown`, exports synchronous C-shaped
