@@ -1,9 +1,15 @@
-import { Mecojoni } from "./mecojoni.ts";
+import { type MecoFormatter, Mecojoni } from "./mecojoni.ts";
 
 async function fetchText(path: string): Promise<string> {
   const response = await fetch(path);
   if (!response.ok) throw new Error(`${path} fetch failed: ${response.status}`);
   return await response.text();
+}
+
+function parseCatalog(source: string): Map<string, string> {
+  return new Map(
+    source.trimEnd().split("\n").map((line) => line.split("=", 2) as [string, string]),
+  );
 }
 
 async function run(): Promise<void> {
@@ -132,9 +138,95 @@ async function run(): Promise<void> {
   } finally {
     typed.value.dispose();
   }
+
+  const [localizedRoot, englishCatalog, polishCatalog] = await Promise.all([
+    fetchText("/fixtures/milestone6/root.meco.md"),
+    fetchText("/fixtures/milestone6/en.catalog"),
+    fetchText("/fixtures/milestone6/pl.catalog"),
+  ]);
+  const catalogs = new Map([
+    ["en", parseCatalog(englishCatalog)],
+    ["pl", parseCatalog(polishCatalog)],
+  ]);
+  const formatter: MecoFormatter = (request) => {
+    const actualLocale = [request.requestedLocale, ...request.fallbackLocales].find((locale) =>
+      catalogs.has(locale)
+    );
+    if (actualLocale === undefined) throw new Error("no browser fallback catalog");
+    const hero = request.arguments.hero;
+    const count = request.arguments.count;
+    if (hero?.kind !== "text" || count?.kind !== "number" || count.denominator !== 1n) {
+      throw new Error("browser formatter arguments have wrong types");
+    }
+    const number = Number(count.numerator);
+    const mod10 = ((number % 10) + 10) % 10;
+    const mod100 = ((number % 100) + 100) % 100;
+    const category = actualLocale === "pl"
+      ? mod10 === 1 && mod100 !== 11
+        ? "one"
+        : mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)
+        ? "few"
+        : "many"
+      : number === 1
+      ? "one"
+      : "other";
+    const pattern = catalogs.get(actualLocale)?.get(category);
+    if (pattern === undefined) throw new Error("browser plural category is absent");
+    return {
+      text: pattern.replace("{hero}", hero.value).replace("{count}", String(number)),
+      actualLocale,
+      environmentHash: `fixture/${actualLocale}/v1`,
+      workUnits: 1,
+      replayable: true,
+    };
+  };
+  const localized = meco.compilePackage({
+    rootId: "root",
+    modules: [{
+      canonicalId: "root",
+      sourceId: 0,
+      sourceName: "root.meco.md",
+      source: localizedRoot,
+      resolvedImports: [],
+    }],
+  }, {
+    messages: [{
+      id: "arrival",
+      arguments: [
+        { name: "hero", type: { kind: "text" } },
+        { name: "count", type: { kind: "number" } },
+      ],
+    }],
+  });
+  if (!localized.ok) throw new Error(localized.error.message);
+  try {
+    for (
+      const [locale, count, ending] of [
+        ["en", 1n, "arrived with one item."],
+        ["pl", 2n, "przybył z 2 przedmiotami."],
+        ["pl", 5n, "przybył z 5 przedmiotów."],
+      ] as const
+    ) {
+      const generated = meco.generateWeighted(localized.value, {
+        seed: 0n,
+        locale,
+        formatter,
+        data: { itemCount: { kind: "number", numerator: count, denominator: 1n } },
+      });
+      if (!generated.ok) throw new Error(generated.error.message);
+      if (!generated.value.text.endsWith(ending)) {
+        throw new Error(`Browser localized category failed for ${locale}/${count}`);
+      }
+      if (generated.value.message?.actualLocale !== locale) {
+        throw new Error("Browser message provenance lost the actual locale");
+      }
+    }
+  } finally {
+    localized.value.dispose();
+  }
   if (meco.liveHandleCount !== 0) throw new Error(`Leaked ${meco.liveHandleCount} handles`);
   document.body.dataset.status = "passed";
-  document.body.textContent = "Mecojoni browser WASM weighted and typed corpora passed";
+  document.body.textContent = "Mecojoni browser WASM weighted, typed, and localized corpora passed";
 }
 
 try {

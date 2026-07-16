@@ -13,6 +13,10 @@ multiple independent errors. Cooked and raw block fixtures assert both normalize
 text and parsed interpolation parts. Compiler fixtures cover host-resolved
 multi-file packages, visibility and cycle failures, fixed weighted seed corpora,
 relative-frequency checks, and a 2,048-rule heap-stack chain.
+Milestone 6 adds a typed message manifest, English and Polish-style plural
+catalogs, explicit fallback coverage, missing-ID/schema-drift failures, and a
+filesystem-backed synchronous test formatter. Catalog syntax is deliberately a
+tiny fixture protocol, not a production Mecojoni localization format.
 
 Tests must read these artifacts through `std::fs`. The production core receives
 owned source modules from the host and never performs filesystem I/O.

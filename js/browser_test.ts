@@ -219,6 +219,36 @@ Deno.test({
           contentType: "text/plain; charset=utf-8",
         },
       ],
+      [
+        "/fixtures/milestone6/root.meco.md",
+        {
+          path: new URL(
+            "crates/mecojoni-core/tests/fixtures/packages/milestone6/root.meco.md",
+            workspace,
+          ),
+          contentType: "text/plain; charset=utf-8",
+        },
+      ],
+      [
+        "/fixtures/milestone6/en.catalog",
+        {
+          path: new URL(
+            "crates/mecojoni-core/tests/fixtures/packages/milestone6/en.catalog",
+            workspace,
+          ),
+          contentType: "text/plain; charset=utf-8",
+        },
+      ],
+      [
+        "/fixtures/milestone6/pl.catalog",
+        {
+          path: new URL(
+            "crates/mecojoni-core/tests/fixtures/packages/milestone6/pl.catalog",
+            workspace,
+          ),
+          contentType: "text/plain; charset=utf-8",
+        },
+      ],
     ]);
     let port = 0;
     const server = Deno.serve({

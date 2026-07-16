@@ -9,9 +9,11 @@ use alloc::{
 
 use crate::{
     ArgumentSyntax, BindingTrace, BodyPartSyntax, BodySyntax, ClauseSyntax, DataBinding,
-    Diagnostic, DiagnosticCode, EligibleWeightTrace, GuardExpression, GuardValue, MecoError,
-    MecoResult, ModuleSyntax, PackageInput, Rational, SelectionTrace, Severity, Span, SplitMix64,
-    Value, ValueSyntax, WeightExpression, WeightSyntax, parse_module, validate_package_input,
+    Diagnostic, DiagnosticCode, EligibleWeightTrace, Formatter, FormatterRequest, GuardExpression,
+    GuardValue, InputDefinition, LocaleRequest, MecoError, MecoResult, MessageDefinition,
+    MessageManifest, MessageTrace, ModuleSyntax, PackageInput, PackageManifest, Rational,
+    SchemaType, SelectionTrace, Severity, Span, SplitMix64, Value, ValueSyntax, WeightExpression,
+    WeightSyntax, parse_module, validate_package_input,
 };
 
 /// Compatibility identifier for independent exact weighted selection.
@@ -81,12 +83,74 @@ pub struct GenerationResult {
     sampler_words: u32,
     bindings: Vec<BindingTrace>,
     selections: Vec<SelectionTrace>,
+    formatter_diagnostics: Vec<Diagnostic>,
+    message: Option<MessageTrace>,
 }
 
 impl GenerationResult {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    #[must_use]
+    pub fn entry(&self) -> &str {
+        &self.entry
+    }
+
+    #[must_use]
+    pub const fn expansions(&self) -> u32 {
+        self.expansions
+    }
+
+    #[must_use]
+    pub const fn sampler_words(&self) -> u32 {
+        self.sampler_words
+    }
+
+    #[must_use]
+    pub fn bindings(&self) -> &[BindingTrace] {
+        &self.bindings
+    }
+
+    #[must_use]
+    pub fn selections(&self) -> &[SelectionTrace] {
+        &self.selections
+    }
+
+    #[must_use]
+    pub fn formatter_diagnostics(&self) -> &[Diagnostic] {
+        &self.formatter_diagnostics
+    }
+
+    #[must_use]
+    pub const fn message(&self) -> Option<&MessageTrace> {
+        self.message.as_ref()
+    }
+}
+
+/// Unformatted deterministic output produced before crossing the host boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GeneratedContent {
+    Text(String),
+    Message(FormatterRequest),
+}
+
+/// Structural generation result used by foreign wrappers and custom adapters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StructuralGenerationResult {
+    content: GeneratedContent,
+    entry: String,
+    expansions: u32,
+    sampler_words: u32,
+    bindings: Vec<BindingTrace>,
+    selections: Vec<SelectionTrace>,
+}
+
+impl StructuralGenerationResult {
+    #[must_use]
+    pub const fn content(&self) -> &GeneratedContent {
+        &self.content
     }
 
     #[must_use]
@@ -137,6 +201,10 @@ enum CompiledPart {
         rule: usize,
         slot: usize,
         name: String,
+    },
+    MessageCall {
+        id: String,
+        arguments: Vec<(String, CompiledValue)>,
     },
 }
 
@@ -230,6 +298,7 @@ struct CompiledRule {
     span: Span,
     productions: Vec<CompiledProduction>,
     analysis: RuleAnalysis,
+    message_effect: bool,
 }
 
 /// Immutable, indexed package artifact.
@@ -240,6 +309,7 @@ pub struct CompiledGrammar {
     entries: Vec<(String, usize)>,
     default_entry: Option<usize>,
     warnings: Vec<Diagnostic>,
+    message_manifest: MessageManifest,
 }
 
 impl CompiledGrammar {
@@ -257,6 +327,22 @@ impl CompiledGrammar {
     #[must_use]
     pub fn warnings(&self) -> &[Diagnostic] {
         &self.warnings
+    }
+
+    /// Returns a deeply owned schema suitable for serialization by the host.
+    #[must_use]
+    pub fn manifest(&self) -> PackageManifest {
+        PackageManifest {
+            inputs: self
+                .inputs
+                .iter()
+                .map(|input| InputDefinition {
+                    name: input.external_name.clone(),
+                    type_: schema_type_from_value_type(&input.type_),
+                })
+                .collect(),
+            messages: self.message_manifest.clone(),
+        }
     }
 
     #[must_use]
@@ -285,6 +371,45 @@ impl CompiledGrammar {
         &self,
         request: &GenerationRequest<'_>,
     ) -> MecoResult<GenerationResult> {
+        let (_, entry_rule) = self.resolve_entry(request.entry)?;
+        if self.rules[entry_rule].message_effect {
+            return Err(runtime_error(
+                DiagnosticCode::FORMATTER_REQUIRED,
+                "the selected entry produces a complete message and requires a formatter",
+            ));
+        }
+        let structural = self.generate_weighted_structural(request, None)?;
+        let GeneratedContent::Text(text) = structural.content else {
+            return Err(runtime_error(
+                DiagnosticCode::FORMATTER_REQUIRED,
+                "the selected entry produces a complete message and requires a formatter",
+            ));
+        };
+        Ok(GenerationResult {
+            text,
+            entry: structural.entry,
+            expansions: structural.expansions,
+            sampler_words: structural.sampler_words,
+            bindings: structural.bindings,
+            selections: structural.selections,
+            formatter_diagnostics: Vec::new(),
+            message: None,
+        })
+    }
+
+    /// Generates structure and returns a complete formatter request without
+    /// invoking host code.
+    ///
+    /// # Errors
+    ///
+    /// Returns stable generation diagnostics, or `E_LOCALE` when a selected
+    /// complete message has no explicit locale request.
+    #[allow(clippy::too_many_lines)]
+    pub fn generate_weighted_structural(
+        &self,
+        request: &GenerationRequest<'_>,
+        locale: Option<LocaleRequest<'_>>,
+    ) -> MecoResult<StructuralGenerationResult> {
         let (entry_name, entry_rule) = self.resolve_entry(request.entry)?;
         let inputs = self.validate_request_data(request.data)?;
         let mut random = SplitMix64::new(request.seed);
@@ -294,6 +419,7 @@ impl CompiledGrammar {
         let mut selection_trace = Vec::new();
         let mut output_scalars = 0_u32;
         let mut expansions = 0_u32;
+        let mut message = None;
         let mut stack = vec![Work::Expand {
             rule: entry_rule,
             arguments: Vec::new(),
@@ -370,6 +496,40 @@ impl CompiledGrammar {
                                 sink,
                                 depth: depth.checked_add(1).unwrap_or(u32::MAX),
                             });
+                        }
+                        CompiledPart::MessageCall { id, arguments } => {
+                            let locale = locale.ok_or_else(|| {
+                                runtime_error(
+                                    DiagnosticCode::LOCALE,
+                                    "complete-message generation requires an explicit locale",
+                                )
+                            })?;
+                            validate_locale_request(locale)?;
+                            if message.is_some() {
+                                return Err(runtime_error(
+                                    DiagnosticCode::MESSAGE_EFFECT,
+                                    "one derivation cannot produce multiple complete messages",
+                                ));
+                            }
+                            let arguments = arguments
+                                .iter()
+                                .map(|(name, value)| {
+                                    Ok((
+                                        name.clone(),
+                                        runtime_value(value, &inputs, &frames[frame].values)?,
+                                    ))
+                                })
+                                .collect::<MecoResult<Vec<_>>>()?;
+                            message = Some(FormatterRequest::new(
+                                id.clone(),
+                                arguments,
+                                locale.requested.to_string(),
+                                locale
+                                    .fallbacks
+                                    .iter()
+                                    .map(|fallback| (*fallback).to_string())
+                                    .collect(),
+                            ));
                         }
                     }
                 }
@@ -542,13 +702,76 @@ impl CompiledGrammar {
             }
         }
 
-        Ok(GenerationResult {
-            text: buffers.swap_remove(0),
+        let text = buffers.swap_remove(0);
+        let content = if let Some(message) = message {
+            if !text.is_empty() {
+                return Err(runtime_error(
+                    DiagnosticCode::MESSAGE_EFFECT,
+                    "a complete message cannot be combined with generated text",
+                ));
+            }
+            GeneratedContent::Message(message)
+        } else {
+            GeneratedContent::Text(text)
+        };
+        Ok(StructuralGenerationResult {
+            content,
             entry: entry_name.to_string(),
             expansions,
             sampler_words: u32::try_from(random.words()).unwrap_or(u32::MAX),
             bindings: binding_trace,
             selections: selection_trace,
+        })
+    }
+
+    /// Generates and synchronously formats one complete-message derivation.
+    /// Ordinary text entries bypass the formatter.
+    ///
+    /// # Errors
+    ///
+    /// Returns generation, locale, formatter, or aggregate output-limit
+    /// diagnostics without exposing partial output.
+    pub fn generate_weighted_with_formatter(
+        &self,
+        request: &GenerationRequest<'_>,
+        locale: LocaleRequest<'_>,
+        formatter: &mut impl Formatter,
+    ) -> MecoResult<GenerationResult> {
+        let structural = self.generate_weighted_structural(request, Some(locale))?;
+        let formatter_request = match structural.content {
+            GeneratedContent::Message(formatter_request) => formatter_request,
+            GeneratedContent::Text(text) => {
+                return Ok(GenerationResult {
+                    text,
+                    entry: structural.entry,
+                    expansions: structural.expansions,
+                    sampler_words: structural.sampler_words,
+                    bindings: structural.bindings,
+                    selections: structural.selections,
+                    formatter_diagnostics: Vec::new(),
+                    message: None,
+                });
+            }
+        };
+        let response = formatter.format(&formatter_request)?;
+        validate_formatter_result(&formatter_request, &response, request.limits)?;
+        let message_trace = MessageTrace::new(
+            formatter_request.message_id().to_string(),
+            formatter_request.requested_locale().to_string(),
+            response.actual_locale.clone(),
+            response.environment_hash.clone(),
+            response.work_units,
+            response.replayable,
+        );
+        Ok(GenerationResult {
+            text: response.text,
+            entry: structural.entry,
+            expansions: structural.expansions,
+            sampler_words: structural.sampler_words,
+            bindings: structural.bindings,
+            selections: structural.selections,
+            formatter_diagnostics: response.diagnostics,
+            message: Some(message_trace),
         })
     }
 
@@ -698,6 +921,21 @@ struct CompiledEntries {
 /// exact static weight totals, or reachable unproductive rules.
 #[allow(clippy::too_many_lines)]
 pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
+    compile_package_with_manifest(package, &MessageManifest::default())
+}
+
+/// Compiles a package against an exact external complete-message schema.
+///
+/// # Errors
+///
+/// Returns all ordinary compilation diagnostics plus stable manifest, missing
+/// message, message-argument, and complete-message-effect diagnostics.
+#[allow(clippy::too_many_lines)]
+pub fn compile_package_with_manifest(
+    package: &PackageInput,
+    manifest: &MessageManifest,
+) -> MecoResult<CompiledGrammar> {
+    validate_message_manifest(manifest)?;
     validate_package_input(package)?;
     let mut modules = Vec::with_capacity(package.modules.len());
     for package_source in &package.modules {
@@ -817,6 +1055,7 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
                     &rule_parameters,
                     &mut scope,
                     &production.body,
+                    manifest,
                 )?;
                 validate_bound_value_usage(production.span, &bindings, &parts)?;
                 productions.push(CompiledProduction {
@@ -842,6 +1081,7 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
                     nullable: false,
                     recursive: false,
                 },
+                message_effect: false,
             });
         }
     }
@@ -859,6 +1099,7 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
             format!("public entry `{entry}` cannot require rule parameters"),
         ));
     }
+    validate_message_effects(&mut rules)?;
     analyze_graph(&mut rules, &entries)?;
     let warnings = recursion_warnings(&rules);
     Ok(CompiledGrammar {
@@ -867,7 +1108,17 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
         entries,
         default_entry,
         warnings,
+        message_manifest: manifest.clone(),
     })
+}
+
+fn schema_type_from_value_type(type_: &ValueType) -> SchemaType {
+    match type_ {
+        ValueType::Text => SchemaType::Text,
+        ValueType::Number => SchemaType::Number,
+        ValueType::Boolean => SchemaType::Boolean,
+        ValueType::Enum { name, .. } => SchemaType::Enum(name.clone()),
+    }
 }
 
 fn validate_module_contracts(
@@ -1159,6 +1410,7 @@ fn lookup_value(
         .map(|(_, index, type_)| (CompiledValue::Input(*index), type_.clone()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_body(
     package: &PackageInput,
     modules: &[ModuleBuild<'_>],
@@ -1167,6 +1419,7 @@ fn lower_body(
     rule_parameters: &[Vec<(String, ValueType)>],
     scope: &mut CompileScope,
     body: &BodySyntax,
+    manifest: &MessageManifest,
 ) -> MecoResult<Vec<CompiledPart>> {
     match body {
         BodySyntax::Empty(_) => Ok(Vec::new()),
@@ -1182,6 +1435,7 @@ fn lower_body(
             schemas,
             rule_parameters,
             scope,
+            manifest,
             block
                 .parts
                 .as_ref()
@@ -1194,11 +1448,13 @@ fn lower_body(
             schemas,
             rule_parameters,
             scope,
+            manifest,
             parts,
         ),
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn lower_parts(
     package: &PackageInput,
     modules: &[ModuleBuild<'_>],
@@ -1206,6 +1462,7 @@ fn lower_parts(
     schemas: &[ModuleSchema],
     rule_parameters: &[Vec<(String, ValueType)>],
     scope: &mut CompileScope,
+    manifest: &MessageManifest,
     parts: &[BodyPartSyntax],
 ) -> MecoResult<Vec<CompiledPart>> {
     let mut lowered = Vec::new();
@@ -1296,11 +1553,24 @@ fn lower_parts(
                 lowered.push(CompiledPart::Value(value));
             }
             BodyPartSyntax::MessageCall(call) => {
-                return Err(source_error(
-                    DiagnosticCode::UNSUPPORTED_FEATURE,
-                    call.span,
-                    "complete messages are implemented in Milestone 6",
-                ));
+                let definition = manifest
+                    .messages
+                    .iter()
+                    .find(|message| message.id == *call.target.value())
+                    .ok_or_else(|| {
+                        source_error(
+                            DiagnosticCode::MESSAGE_MISSING,
+                            call.target.span(),
+                            format!(
+                                "message `{}` is absent from the formatter manifest",
+                                call.target.value()
+                            ),
+                        )
+                    })?;
+                lowered.push(CompiledPart::MessageCall {
+                    id: definition.id.clone(),
+                    arguments: compile_message_arguments(call, definition, scope, schemas)?,
+                });
             }
         }
     }
@@ -1375,6 +1645,229 @@ fn compile_call_arguments(
     Ok(compiled)
 }
 
+fn compile_message_arguments(
+    call: &crate::CallSyntax,
+    definition: &MessageDefinition,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> MecoResult<Vec<(String, CompiledValue)>> {
+    if definition.arguments.len() != call.arguments.len()
+        || definition.arguments.iter().any(|expected| {
+            !call
+                .arguments
+                .iter()
+                .any(|argument| argument.name.value() == &expected.name)
+        })
+    {
+        return Err(source_error(
+            DiagnosticCode::MESSAGE_ARGUMENT,
+            call.span,
+            format!(
+                "message `{}` does not supply its {} manifest arguments",
+                definition.id,
+                definition.arguments.len()
+            ),
+        ));
+    }
+    let mut compiled = Vec::with_capacity(definition.arguments.len());
+    for expected in &definition.arguments {
+        let argument = call
+            .arguments
+            .iter()
+            .find(|argument| argument.name.value() == &expected.name)
+            .expect("message arity validation found every named argument");
+        let (value, actual) = compile_argument_value(argument, scope, schemas)?;
+        if !schema_type_matches(&expected.type_, &actual) {
+            return Err(source_error(
+                DiagnosticCode::MESSAGE_ARGUMENT,
+                argument.span,
+                format!(
+                    "message argument `{}` expects `{}` but received `{}`",
+                    expected.name,
+                    schema_type_name(&expected.type_),
+                    actual.display_name()
+                ),
+            ));
+        }
+        compiled.push((expected.name.clone(), value));
+    }
+    Ok(compiled)
+}
+
+fn schema_type_matches(schema: &SchemaType, actual: &ValueType) -> bool {
+    match (schema, actual) {
+        (SchemaType::Text, ValueType::Text)
+        | (SchemaType::Number, ValueType::Number)
+        | (SchemaType::Boolean, ValueType::Boolean) => true,
+        (SchemaType::Enum(expected), ValueType::Enum { name, .. }) => expected == name,
+        _ => false,
+    }
+}
+
+fn schema_type_name(schema: &SchemaType) -> &str {
+    match schema {
+        SchemaType::Text => "text",
+        SchemaType::Number => "number",
+        SchemaType::Boolean => "boolean",
+        SchemaType::Enum(name) => name,
+    }
+}
+
+fn validate_message_manifest(manifest: &MessageManifest) -> MecoResult<()> {
+    for (message_index, message) in manifest.messages.iter().enumerate() {
+        if !valid_message_id(&message.id) {
+            return Err(runtime_error(
+                DiagnosticCode::MESSAGE_MANIFEST,
+                format!(
+                    "message ID `{}` must use lowercase ASCII letters, digits, and hyphens and begin with a letter",
+                    message.id
+                ),
+            ));
+        }
+        if manifest.messages[..message_index]
+            .iter()
+            .any(|previous| previous.id == message.id)
+        {
+            return Err(runtime_error(
+                DiagnosticCode::MESSAGE_MANIFEST,
+                format!(
+                    "formatter manifest contains duplicate message `{}`",
+                    message.id
+                ),
+            ));
+        }
+        for (argument_index, argument) in message.arguments.iter().enumerate() {
+            if !valid_value_name(&argument.name) {
+                return Err(runtime_error(
+                    DiagnosticCode::MESSAGE_MANIFEST,
+                    format!(
+                        "message `{}` has invalid argument name `{}`",
+                        message.id, argument.name
+                    ),
+                ));
+            }
+            if message.arguments[..argument_index]
+                .iter()
+                .any(|previous| previous.name == argument.name)
+            {
+                return Err(runtime_error(
+                    DiagnosticCode::MESSAGE_MANIFEST,
+                    format!(
+                        "message `{}` contains duplicate argument `{}`",
+                        message.id, argument.name
+                    ),
+                ));
+            }
+            if let SchemaType::Enum(name) = &argument.type_ {
+                if name.is_empty() {
+                    return Err(runtime_error(
+                        DiagnosticCode::MESSAGE_MANIFEST,
+                        format!(
+                            "message `{}` argument `{}` has an empty enum type",
+                            message.id, argument.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_message_effects(rules: &mut [CompiledRule]) -> MecoResult<()> {
+    let mut effects = vec![false; rules.len()];
+    loop {
+        let mut changed = false;
+        for (index, rule) in rules.iter().enumerate() {
+            if !effects[index]
+                && !rule.productions.is_empty()
+                && rule
+                    .productions
+                    .iter()
+                    .all(|production| complete_message_production(production, &effects))
+            {
+                effects[index] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (rule_index, rule) in rules.iter().enumerate() {
+        for production in &rule.productions {
+            for binding in &production.bindings {
+                if effects[binding.rule] {
+                    return Err(source_error(
+                        DiagnosticCode::MESSAGE_EFFECT,
+                        rule.span,
+                        format!(
+                            "rule `{}` cannot silently bind complete-message rule `{}`",
+                            rule.name, rules[binding.rule].name
+                        ),
+                    ));
+                }
+            }
+            for part in &production.parts {
+                match part {
+                    CompiledPart::Capture { rule: target, .. } if effects[*target] => {
+                        return Err(source_error(
+                            DiagnosticCode::MESSAGE_EFFECT,
+                            rule.span,
+                            format!(
+                                "rule `{}` cannot capture complete-message rule `{}`",
+                                rule.name, rules[*target].name
+                            ),
+                        ));
+                    }
+                    CompiledPart::MessageCall { .. } | CompiledPart::RuleCall { rule: _, .. }
+                        if part_is_complete_message(part, &effects) && !effects[rule_index] =>
+                    {
+                        return Err(source_error(
+                            DiagnosticCode::MESSAGE_EFFECT,
+                            rule.span,
+                            format!(
+                                "rule `{}` mixes a complete message with ordinary text or bindings",
+                                rule.name
+                            ),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    for (index, rule) in rules.iter_mut().enumerate() {
+        rule.message_effect = effects[index];
+    }
+    Ok(())
+}
+
+fn complete_message_production(production: &CompiledProduction, effects: &[bool]) -> bool {
+    production.parts.len() == 1 && part_is_complete_message(&production.parts[0], effects)
+}
+
+fn part_is_complete_message(part: &CompiledPart, effects: &[bool]) -> bool {
+    match part {
+        CompiledPart::MessageCall { .. } => true,
+        CompiledPart::RuleCall { rule, .. } => effects[*rule],
+        CompiledPart::Literal(_) | CompiledPart::Value(_) | CompiledPart::Capture { .. } => false,
+    }
+}
+
+fn valid_message_id(id: &str) -> bool {
+    let mut bytes = id.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z'))
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn valid_value_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 fn compile_argument_value(
     argument: &ArgumentSyntax,
     scope: &CompileScope,
@@ -1420,6 +1913,11 @@ fn validate_bound_value_usage(
             CompiledPart::Value(value) => collect_local_value(value, &mut used),
             CompiledPart::RuleCall { arguments, .. } => {
                 for argument in arguments {
+                    collect_local_value(argument, &mut used);
+                }
+            }
+            CompiledPart::MessageCall { arguments, .. } => {
+                for (_, argument) in arguments {
                     collect_local_value(argument, &mut used);
                 }
             }
@@ -2147,6 +2645,100 @@ fn append_output(
     Ok(())
 }
 
+fn validate_locale_request(locale: LocaleRequest<'_>) -> MecoResult<()> {
+    if !valid_locale(locale.requested) {
+        return Err(runtime_error(
+            DiagnosticCode::LOCALE,
+            format!("invalid requested locale `{}`", locale.requested),
+        ));
+    }
+    for (index, fallback) in locale.fallbacks.iter().enumerate() {
+        if !valid_locale(fallback) {
+            return Err(runtime_error(
+                DiagnosticCode::LOCALE,
+                format!("invalid fallback locale `{fallback}`"),
+            ));
+        }
+        if *fallback == locale.requested || locale.fallbacks[..index].contains(fallback) {
+            return Err(runtime_error(
+                DiagnosticCode::LOCALE,
+                format!("locale chain contains duplicate `{fallback}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_locale(locale: &str) -> bool {
+    !locale.is_empty()
+        && !locale.starts_with('-')
+        && !locale.ends_with('-')
+        && !locale.contains("--")
+        && locale
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn validate_formatter_result(
+    request: &FormatterRequest,
+    result: &crate::FormatterResult,
+    limits: GenerationLimits,
+) -> MecoResult<()> {
+    if result.actual_locale != request.requested_locale()
+        && !request
+            .fallback_locales()
+            .iter()
+            .any(|fallback| fallback == &result.actual_locale)
+    {
+        return Err(runtime_error(
+            DiagnosticCode::LOCALE,
+            format!(
+                "formatter returned locale `{}` outside the requested fallback chain",
+                result.actual_locale
+            ),
+        ));
+    }
+    if result
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity() == Severity::Error)
+    {
+        return Err(MecoError::with_related(
+            Diagnostic::new(
+                DiagnosticCode::FORMATTER,
+                Severity::Error,
+                None,
+                "formatter reported a fatal diagnostic",
+            ),
+            result.diagnostics.clone(),
+        ));
+    }
+    if result.work_units > 10_000 {
+        return Err(runtime_error(
+            DiagnosticCode::FORMATTER_LIMIT,
+            format!(
+                "formatter work units exceed 10000 (reported {})",
+                result.work_units
+            ),
+        ));
+    }
+    if result.replayable && result.environment_hash.is_empty() {
+        return Err(runtime_error(
+            DiagnosticCode::FORMATTER,
+            "a replayable formatter result requires a non-empty environment hash",
+        ));
+    }
+    let scalars = u32::try_from(result.text.chars().count()).unwrap_or(u32::MAX);
+    let bytes = u32::try_from(result.text.len()).unwrap_or(u32::MAX);
+    if scalars > limits.max_output_scalars || bytes > limits.max_output_bytes {
+        return Err(runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            format!("formatted output exceeds scalar/byte limits ({scalars}/{bytes})"),
+        ));
+    }
+    Ok(())
+}
+
 fn analyze_graph(rules: &mut [CompiledRule], entries: &[(String, usize)]) -> MecoResult<()> {
     let edges = graph_edges(rules);
     let reachable = reachable_rules(&edges, entries);
@@ -2233,6 +2825,7 @@ fn nullable_rules(rules: &[CompiledRule], _edges: &[Vec<usize>]) -> Vec<bool> {
                 CompiledPart::RuleCall { .. }
                 | CompiledPart::Capture { .. }
                 | CompiledPart::Value(_) => true,
+                CompiledPart::MessageCall { .. } => false,
             })
         },
         false,
@@ -2312,7 +2905,9 @@ fn solve_monotone_rule_property(
 fn part_rule(part: &CompiledPart) -> Option<usize> {
     match part {
         CompiledPart::RuleCall { rule, .. } | CompiledPart::Capture { rule, .. } => Some(*rule),
-        CompiledPart::Literal(_) | CompiledPart::Value(_) => None,
+        CompiledPart::Literal(_) | CompiledPart::Value(_) | CompiledPart::MessageCall { .. } => {
+            None
+        }
     }
 }
 
@@ -2445,10 +3040,14 @@ fn runtime_error(code: DiagnosticCode, message: impl Into<String>) -> MecoError 
 mod tests {
     use alloc::{format, string::ToString, vec, vec::Vec};
 
-    use super::{GenerationLimits, GenerationRequest, compile_package};
+    use super::{
+        GenerationLimits, GenerationRequest, compile_package, compile_package_with_manifest,
+        validate_formatter_result,
+    };
     use crate::{
-        DataBinding, DiagnosticCode, PackageInput, PackageSource, Rational, SourceFile, SourceId,
-        Value,
+        DataBinding, Diagnostic, DiagnosticCode, Formatter, FormatterRequest, FormatterResult,
+        LocaleRequest, MecoResult, MessageArgument, MessageDefinition, MessageManifest,
+        PackageInput, PackageSource, Rational, SchemaType, Severity, SourceFile, SourceId, Value,
     };
 
     fn package(source: &str) -> PackageInput {
@@ -2464,6 +3063,49 @@ mod tests {
 
     fn data(name: &str, value: Value) -> DataBinding {
         DataBinding::new(name.to_string(), value)
+    }
+
+    fn arrival_manifest() -> MessageManifest {
+        MessageManifest {
+            messages: vec![MessageDefinition {
+                id: "arrival".to_string(),
+                arguments: vec![
+                    MessageArgument {
+                        name: "hero".to_string(),
+                        type_: SchemaType::Text,
+                    },
+                    MessageArgument {
+                        name: "count".to_string(),
+                        type_: SchemaType::Number,
+                    },
+                ],
+            }],
+        }
+    }
+
+    struct EnglishFormatter;
+
+    impl Formatter for EnglishFormatter {
+        fn format(&mut self, request: &FormatterRequest) -> MecoResult<FormatterResult> {
+            assert_eq!(request.message_id(), "arrival");
+            assert_eq!(request.requested_locale(), "en");
+            assert_eq!(request.arguments()[0].0, "hero");
+            assert_eq!(request.arguments()[1].0, "count");
+            let Value::Text(hero) = &request.arguments()[0].1 else {
+                panic!("hero is text")
+            };
+            let Value::Number(count) = request.arguments()[1].1 else {
+                panic!("count is numeric")
+            };
+            Ok(FormatterResult {
+                text: format!("{hero} arrived with {count} items."),
+                actual_locale: "en".to_string(),
+                environment_hash: "test-formatter/en-v1".to_string(),
+                diagnostics: vec![],
+                work_units: 1,
+                replayable: true,
+            })
+        }
     }
 
     #[test]
@@ -2484,6 +3126,174 @@ mod tests {
         assert!(matches!(first.text(), "A" | "B"));
         assert_eq!(first.expansions(), 1);
         assert_eq!(first.sampler_words(), 1);
+    }
+
+    #[test]
+    fn complete_messages_use_typed_manifest_and_synchronous_formatter() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: arrival\n",
+            "inputs:\n  itemCount: number\nexports: [arrival]\n---\n\n",
+            "# arrival\n- {name as hero}\n  &arrival <- $hero, count: $itemCount\n",
+            "# name\n- Ada\n",
+        ));
+        let grammar = compile_package_with_manifest(&package, &arrival_manifest())
+            .expect("message package compiles");
+        let request_data = vec![data(
+            "itemCount",
+            Value::Number(Rational::new(2, 1).expect("count")),
+        )];
+        let request = GenerationRequest {
+            data: &request_data,
+            trace_bindings: true,
+            ..GenerationRequest::with_seed(0)
+        };
+        assert_eq!(
+            grammar
+                .generate_weighted(&request)
+                .expect_err("plain generation requires formatter")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::FORMATTER_REQUIRED
+        );
+        let mut formatter = EnglishFormatter;
+        let generated = grammar
+            .generate_weighted_with_formatter(
+                &request,
+                LocaleRequest {
+                    requested: "en",
+                    fallbacks: &[],
+                },
+                &mut formatter,
+            )
+            .expect("message is formatted");
+
+        assert_eq!(generated.text(), "Ada arrived with 2 items.");
+        assert_eq!(generated.bindings()[0].name(), "hero");
+        let message = generated.message().expect("message trace");
+        assert_eq!(message.message_id(), "arrival");
+        assert_eq!(message.actual_locale(), "en");
+        assert!(message.replayable());
+        assert_eq!(grammar.manifest().messages, arrival_manifest());
+        assert_eq!(grammar.manifest().inputs[0].name, "itemCount");
+    }
+
+    #[test]
+    fn message_schema_and_transitive_effect_fail_with_stable_codes() {
+        let missing = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\nexports: [start]\n---\n\n",
+            "# start\n- &unknown\n",
+        ));
+        assert_eq!(
+            compile_package_with_manifest(&missing, &arrival_manifest())
+                .expect_err("missing ID fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::MESSAGE_MISSING
+        );
+
+        for source in [
+            concat!(
+                "---\nmeco: 2\nmodule: root\nentry: start\ninputs:\n  itemCount: number\n",
+                "exports: [start]\n---\n\n# start\n- before @localized\n",
+                "# localized\n- &arrival <- hero: \"Ada\", count: $itemCount\n",
+            ),
+            concat!(
+                "---\nmeco: 2\nmodule: root\nentry: start\ninputs:\n  itemCount: number\n",
+                "exports: [start]\n---\n\n# start\n- @{localized as line}$line\n",
+                "# localized\n- &arrival <- hero: \"Ada\", count: $itemCount\n",
+            ),
+            concat!(
+                "---\nmeco: 2\nmodule: root\nentry: start\ninputs:\n  itemCount: number\n",
+                "exports: [start]\n---\n\n# start\n- {localized as line}\n  $line\n",
+                "# localized\n- &arrival <- hero: \"Ada\", count: $itemCount\n",
+            ),
+            concat!(
+                "---\nmeco: 2\nmodule: root\nentry: start\ninputs:\n  itemCount: number\n",
+                "exports: [start]\n---\n\n# start\n",
+                "- &arrival <- hero: \"Ada\", count: $itemCount\n- plain\n",
+            ),
+        ] {
+            assert_eq!(
+                compile_package_with_manifest(&package(source), &arrival_manifest())
+                    .expect_err("invalid message composition fails")
+                    .diagnostics()[0]
+                    .code(),
+                DiagnosticCode::MESSAGE_EFFECT
+            );
+        }
+    }
+
+    #[test]
+    fn formatter_results_enforce_locale_work_provenance_diagnostics_and_output_limits() {
+        let request = FormatterRequest::new(
+            "arrival".to_string(),
+            vec![],
+            "fr".to_string(),
+            vec!["en".to_string()],
+        );
+        let valid = FormatterResult {
+            text: "hello".to_string(),
+            actual_locale: "en".to_string(),
+            environment_hash: "formatter/v1".to_string(),
+            diagnostics: vec![],
+            work_units: 1,
+            replayable: true,
+        };
+        validate_formatter_result(&request, &valid, GenerationLimits::default())
+            .expect("valid fallback formatter result");
+
+        let mut invalid = valid.clone();
+        invalid.actual_locale = "de".to_string();
+        assert_eq!(
+            validate_formatter_result(&request, &invalid, GenerationLimits::default())
+                .expect_err("outside locale fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::LOCALE
+        );
+        invalid = valid.clone();
+        invalid.work_units = 10_001;
+        assert_eq!(
+            validate_formatter_result(&request, &invalid, GenerationLimits::default())
+                .expect_err("work limit fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::FORMATTER_LIMIT
+        );
+        invalid = valid.clone();
+        invalid.environment_hash.clear();
+        assert_eq!(
+            validate_formatter_result(&request, &invalid, GenerationLimits::default())
+                .expect_err("replay provenance fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::FORMATTER
+        );
+        invalid = valid.clone();
+        invalid.diagnostics.push(Diagnostic::new(
+            DiagnosticCode::FORMATTER,
+            Severity::Error,
+            None,
+            "catalog failed",
+        ));
+        assert_eq!(
+            validate_formatter_result(&request, &invalid, GenerationLimits::default())
+                .expect_err("fatal formatter diagnostic fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::FORMATTER
+        );
+        let limits = GenerationLimits {
+            max_output_scalars: 4,
+            ..GenerationLimits::default()
+        };
+        assert_eq!(
+            validate_formatter_result(&request, &valid, limits)
+                .expect_err("formatted output limit fails")
+                .diagnostics()[0]
+                .code(),
+            DiagnosticCode::LIMIT_OUTPUT
+        );
     }
 
     #[test]

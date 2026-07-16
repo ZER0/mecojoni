@@ -3,9 +3,9 @@
 > This document is the target design, not a claim that every feature already
 > exists. The portable workspace, complete recovering source parser, immutable
 > package compiler, iterative `weighted/1` generator, deterministic primitives,
-> typed request/guard/binding runtime, package boundary, handwritten WASM ABI,
-> Deno/browser wrapper, and initial audit are implemented; completion is tracked
-> in `ROADMAP.md`.
+> typed request/guard/binding runtime, complete-message formatter boundary,
+> package boundary, handwritten WASM ABI, Deno/browser wrapper, and initial audit
+> are implemented; completion is tracked in `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -888,7 +888,7 @@ Every request validates separately named positive safe-integer limits for:
 - per-candidate weighted-sampler PRNG words/rejection steps;
 - per-call aggregate expansions, sampler steps, and candidate count;
 - final rendered code points and UTF-8 bytes;
-- formatter-reported deterministic work units, when the adapter supports them.
+- formatter-reported deterministic work units.
 
 #### `interactive/1` resource profile
 
@@ -905,17 +905,17 @@ Unless a host selects another named profile, generation uses `interactive/1`:
 | maximum aggregate sampler steps per call | 8,192 | 98,304 |
 | maximum final rendered code points | 16,384 | 16,384 |
 | maximum final UTF-8 bytes | 65,536 | 65,536 |
-| maximum formatter work units, when reported | 10,000 | 10,000 |
+| maximum formatter work units | 10,000 | 10,000 |
 
-The formatter work-unit limit is a contract only for adapters that report
-deterministic units. An adapter that cannot account for its work must be marked
-non-replayable and requires an explicit host opt-in. Hosts may choose a different
-named profile or tighten individual limits; any looser custom limit set is a named
-profile whose values enter the replay receipt. Wall-clock time is never a seeded
-limit.
+Every formatter reports deterministic work units, including a conservative upper
+bound when its engine cannot expose a finer counter. A non-replayable adapter still
+reports bounded work and requires explicit host opt-in. Hosts may choose a
+different named profile or tighten individual limits; any looser custom limit set
+is a named profile whose values enter the replay receipt. Wall-clock time is never
+a seeded limit.
 
-Wall-clock time is never a seeded limit. A candidate that exceeds its local limit
-is disqualified with a recorded diagnostic; exhausting every candidate is a typed
+A candidate that exceeds its local limit is disqualified with a recorded
+diagnostic; exhausting every candidate is a typed
 generation failure. An aggregate, final-output, or cancellation limit aborts the
 whole call. Grammar expansion cannot overflow the native call stack because it is
 iterative; expected resource failures are translated into typed errors, foreign
@@ -1045,8 +1045,11 @@ Mecojoni chooses a stable semantic message ID. Fluent owns the complete localize
 message, external values, CLDR cardinal/ordinal selectors, number/date formatting,
 terms, and locale-specific grammar.
 
-The formatter returns `{ text, diagnostics, actualLocale, environmentHash }` plus
-optional segment provenance. Coarse provenance for the complete message is
+The formatter returns
+`{ text, diagnostics, actualLocale, environmentHash, workUnits, replayable }`
+plus optional segment provenance. The first executable boundary requires all six
+contract fields; diagnostics may be empty, and a replayable response requires a
+nonempty environment hash. Coarse provenance for the complete message is
 mandatory; fine-grained literal/argument/term spans are adapter-dependent and must
 not be promised until the Fluent adapter proves it can supply them correctly.
 

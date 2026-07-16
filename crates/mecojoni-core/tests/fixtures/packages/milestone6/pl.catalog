@@ -1,0 +1,3 @@
+one={hero} przybył z jednym przedmiotem.
+few={hero} przybył z {count} przedmiotami.
+many={hero} przybył z {count} przedmiotów.

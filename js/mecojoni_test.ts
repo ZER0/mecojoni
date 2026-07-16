@@ -1,4 +1,9 @@
-import { Mecojoni, type PackageDescription } from "./mecojoni.ts";
+import {
+  type MecoFormatter,
+  Mecojoni,
+  type MessageManifest,
+  type PackageDescription,
+} from "./mecojoni.ts";
 
 const workspace = new URL("../", import.meta.url);
 const wasmUrl = new URL(
@@ -71,6 +76,33 @@ async function milestone5Package(): Promise<PackageDescription> {
     ],
   };
 }
+
+async function milestone6Package(): Promise<PackageDescription> {
+  const fixture = new URL(
+    "../crates/mecojoni-core/tests/fixtures/packages/milestone6/",
+    import.meta.url,
+  );
+  return {
+    rootId: "root",
+    modules: [{
+      canonicalId: "root",
+      sourceId: 0,
+      sourceName: "root.meco.md",
+      source: await Deno.readTextFile(new URL("root.meco.md", fixture)),
+      resolvedImports: [],
+    }],
+  };
+}
+
+const milestone6Manifest: MessageManifest = {
+  messages: [{
+    id: "arrival",
+    arguments: [
+      { name: "hero", type: { kind: "text" } },
+      { name: "count", type: { kind: "number" } },
+    ],
+  }],
+};
 
 Deno.test("Deno compiles and generates the native weighted seed corpus", async () => {
   const meco = await instantiate();
@@ -188,6 +220,129 @@ Deno.test("Deno executes typed data, guards, dynamic weights, calls, and binding
   } finally {
     compiled.value.dispose();
   }
+  assertEquals(meco.liveHandleCount, 0);
+});
+
+Deno.test("Deno resolves complete messages through the synchronous locale protocol", async () => {
+  const meco = await instantiate();
+  const fixture = new URL(
+    "../crates/mecojoni-core/tests/fixtures/packages/milestone6/",
+    import.meta.url,
+  );
+  const catalogs = new Map<string, Map<string, string>>();
+  for (const locale of ["en", "pl"]) {
+    const entries = (await Deno.readTextFile(new URL(`${locale}.catalog`, fixture)))
+      .trimEnd()
+      .split("\n")
+      .map((line) => line.split("=", 2) as [string, string]);
+    catalogs.set(locale, new Map(entries));
+  }
+  const formatter: MecoFormatter = (request) => {
+    const actualLocale = [request.requestedLocale, ...request.fallbackLocales].find((locale) =>
+      catalogs.has(locale)
+    );
+    if (actualLocale === undefined) throw new Error("no loaded fallback catalog");
+    const hero = request.arguments.hero;
+    const count = request.arguments.count;
+    assert(hero?.kind === "text", "hero formatter argument is not text");
+    assert(count?.kind === "number" && count.denominator === 1n, "count is not an integer");
+    const number = Number(count.numerator);
+    let category: string;
+    if (actualLocale === "pl") {
+      const mod10 = ((number % 10) + 10) % 10;
+      const mod100 = ((number % 100) + 100) % 100;
+      category = mod10 === 1 && mod100 !== 11
+        ? "one"
+        : mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)
+        ? "few"
+        : "many";
+    } else {
+      category = number === 1 ? "one" : "other";
+    }
+    const pattern = catalogs.get(actualLocale)?.get(category);
+    assert(pattern !== undefined, "plural category is absent");
+    return {
+      text: pattern.replace("{hero}", hero.value).replace("{count}", String(number)),
+      actualLocale,
+      environmentHash: `fixture/${actualLocale}/v1`,
+      diagnostics: [],
+      workUnits: 1,
+      replayable: true,
+    };
+  };
+  const compiled = meco.compilePackage(await milestone6Package(), milestone6Manifest);
+  assert(compiled.ok, compiled.ok ? "" : compiled.error.message);
+  try {
+    for (
+      const [locale, count, ending] of [
+        ["en", 1n, "arrived with one item."],
+        ["en", 2n, "arrived with 2 items."],
+        ["pl", 1n, "przybył z jednym przedmiotem."],
+        ["pl", 2n, "przybył z 2 przedmiotami."],
+        ["pl", 5n, "przybył z 5 przedmiotów."],
+      ] as const
+    ) {
+      const generated = meco.generateWeighted(compiled.value, {
+        seed: 0n,
+        locale,
+        formatter,
+        data: { itemCount: { kind: "number", numerator: count, denominator: 1n } },
+        traceBindings: true,
+      });
+      assert(generated.ok, generated.ok ? "" : generated.error.message);
+      assert(generated.value.text.endsWith(ending), `${locale}/${count} plural mismatch`);
+      assertEquals(generated.value.message?.actualLocale, locale);
+      assertEquals(generated.value.bindings[0]?.name, "hero");
+    }
+    const fallback = meco.generateWeighted(compiled.value, {
+      seed: 0n,
+      locale: "fr",
+      fallbackLocales: ["en"],
+      formatter,
+      data: { itemCount: { kind: "number", numerator: 1n, denominator: 1n } },
+    });
+    assert(fallback.ok, fallback.ok ? "" : fallback.error.message);
+    assertEquals(fallback.value.message?.requestedLocale, "fr");
+    assertEquals(fallback.value.message?.actualLocale, "en");
+
+    const invalidLocale = meco.generateWeighted(compiled.value, {
+      seed: 0n,
+      locale: "en",
+      formatter: () => ({
+        text: "wrong locale",
+        actualLocale: "de",
+        environmentHash: "fixture/de/v1",
+        workUnits: 1,
+        replayable: true,
+      }),
+      data: { itemCount: { kind: "number", numerator: 1n, denominator: 1n } },
+    });
+    assert(!invalidLocale.ok, "formatter escaped the locale chain");
+    assertEquals(invalidLocale.diagnostics[0]?.code, "E_LOCALE");
+  } finally {
+    compiled.value.dispose();
+  }
+  assertEquals(meco.liveHandleCount, 0);
+});
+
+Deno.test("Deno reports message manifest drift before invoking a formatter", async () => {
+  const meco = await instantiate();
+  const description = await milestone6Package();
+  const missing = meco.compilePackage(description, { messages: [] });
+  assert(!missing.ok, "missing message unexpectedly compiled");
+  assertEquals(missing.diagnostics[0]?.code, "E_MESSAGE_MISSING");
+
+  const drifted = meco.compilePackage(description, {
+    messages: [{
+      id: "arrival",
+      arguments: [
+        { name: "hero", type: { kind: "number" } },
+        { name: "count", type: { kind: "number" } },
+      ],
+    }],
+  });
+  assert(!drifted.ok, "schema drift unexpectedly compiled");
+  assertEquals(drifted.diagnostics[0]?.code, "E_MESSAGE_ARGUMENT");
   assertEquals(meco.liveHandleCount, 0);
 });
 

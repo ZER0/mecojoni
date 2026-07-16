@@ -2,10 +2,13 @@ use std::{fs, path::PathBuf};
 
 use mecojoni_core::{
     ArgumentSyntax, BlockChomp, BodyPartSyntax, BodySyntax, ClauseSyntax, CompositionProfile,
-    DataBinding, GenerationLimits, GenerationRequest, LocationProfile, PackageInput, PackageSource,
-    Rational, ResolvedImport, ResourceProfile, SourceFile, SourceId, SplitMix64, Value,
-    ValueSyntax, WeightSyntax, audit_composition, compile_package, diversity_factor_16_16,
-    location_cooldown_multiplier, parse_front_matter, parse_module, validate_package_input,
+    DataBinding, Diagnostic, DiagnosticCode, Formatter, FormatterRequest, FormatterResult,
+    GenerationLimits, GenerationRequest, LocaleRequest, LocationProfile, MecoError, MecoResult,
+    MessageArgument, MessageDefinition, MessageManifest, PackageInput, PackageSource, Rational,
+    ResolvedImport, ResourceProfile, SchemaType, Severity, SourceFile, SourceId, SplitMix64, Value,
+    ValueSyntax, WeightSyntax, audit_composition, compile_package, compile_package_with_manifest,
+    diversity_factor_16_16, location_cooldown_multiplier, parse_front_matter, parse_module,
+    validate_package_input,
 };
 use std::str::FromStr;
 
@@ -54,6 +57,126 @@ fn request_data(mood: &str, urgency: Rational, enabled: bool) -> Vec<DataBinding
         DataBinding::new("urgency".to_string(), Value::Number(urgency)),
         DataBinding::new("enabled".to_string(), Value::Boolean(enabled)),
     ]
+}
+
+fn milestone6_manifest(directory: &std::path::Path) -> MessageManifest {
+    let source = fs::read_to_string(directory.join("messages.manifest"))
+        .expect("read Milestone 6 message manifest");
+    let messages = source
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (id, raw_arguments) = line.split_once('|').expect("manifest message separator");
+            let arguments = raw_arguments
+                .split(',')
+                .map(|argument| {
+                    let (name, type_name) =
+                        argument.split_once(':').expect("manifest type separator");
+                    let type_ = match type_name {
+                        "text" => SchemaType::Text,
+                        "number" => SchemaType::Number,
+                        "boolean" => SchemaType::Boolean,
+                        other => SchemaType::Enum(other.to_string()),
+                    };
+                    MessageArgument {
+                        name: name.to_string(),
+                        type_,
+                    }
+                })
+                .collect();
+            MessageDefinition {
+                id: id.to_string(),
+                arguments,
+            }
+        })
+        .collect();
+    MessageManifest { messages }
+}
+
+struct FixtureFormatter {
+    catalogs: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl FixtureFormatter {
+    fn load(directory: &std::path::Path, locales: &[&str]) -> Self {
+        let catalogs = locales
+            .iter()
+            .map(|locale| {
+                let catalog = fs::read_to_string(directory.join(format!("{locale}.catalog")))
+                    .expect("read locale fixture")
+                    .lines()
+                    .map(|line| {
+                        let (category, pattern) =
+                            line.split_once('=').expect("catalog category separator");
+                        (category.to_string(), pattern.to_string())
+                    })
+                    .collect();
+                ((*locale).to_string(), catalog)
+            })
+            .collect();
+        Self { catalogs }
+    }
+}
+
+impl Formatter for FixtureFormatter {
+    fn format(&mut self, request: &FormatterRequest) -> MecoResult<FormatterResult> {
+        let actual_locale = core::iter::once(request.requested_locale())
+            .chain(request.fallback_locales().iter().map(String::as_str))
+            .find(|locale| self.catalogs.iter().any(|(known, _)| known == locale))
+            .ok_or_else(|| {
+                MecoError::new(Diagnostic::new(
+                    DiagnosticCode::FORMATTER,
+                    Severity::Error,
+                    None,
+                    "no requested or fallback catalog is loaded",
+                ))
+            })?
+            .to_string();
+        let catalog = self
+            .catalogs
+            .iter()
+            .find(|(locale, _)| locale == &actual_locale)
+            .expect("selected catalog exists");
+        let Value::Text(hero) = &request.arguments()[0].1 else {
+            panic!("fixture hero is text")
+        };
+        let Value::Number(count) = request.arguments()[1].1 else {
+            panic!("fixture count is numeric")
+        };
+        assert_eq!(count.denominator(), 1);
+        let number = count.numerator();
+        let category = if actual_locale == "pl" {
+            let mod10 = number.rem_euclid(10);
+            let mod100 = number.rem_euclid(100);
+            if mod10 == 1 && mod100 != 11 {
+                "one"
+            } else if (2..=4).contains(&mod10) && !(12..=14).contains(&mod100) {
+                "few"
+            } else {
+                "many"
+            }
+        } else if number == 1 {
+            "one"
+        } else {
+            "other"
+        };
+        let pattern = catalog
+            .1
+            .iter()
+            .find(|(candidate, _)| candidate == category)
+            .expect("plural category exists")
+            .1
+            .replace("{hero}", hero)
+            .replace("{count}", &count.to_string());
+        Ok(FormatterResult {
+            text: pattern,
+            actual_locale: actual_locale.clone(),
+            environment_hash: format!("fixture/{actual_locale}/v1"),
+            diagnostics: vec![],
+            work_units: 1,
+            replayable: true,
+        })
+    }
 }
 
 #[test]
@@ -924,4 +1047,108 @@ fn cooked_block_interpolation_and_raw_blocks_are_distinct_in_a_real_fixture() {
     assert!(raw.raw);
     assert!(raw.parts.is_none());
     assert_eq!(raw.text.value(), "@person and $playerName stay literal.");
+}
+
+#[test]
+fn milestone6_files_format_english_polish_categories_and_explicit_fallback() {
+    let directory = fixture_path("packages/milestone6");
+    let root_path = directory.join("root.meco.md");
+    let package = PackageInput {
+        root_id: "root".to_string(),
+        modules: vec![PackageSource {
+            canonical_id: "root".to_string(),
+            source: SourceFile::new(
+                SourceId::new(0),
+                root_path.display().to_string(),
+                fs::read_to_string(root_path).expect("read Milestone 6 grammar"),
+            ),
+            resolved_imports: vec![],
+        }],
+    };
+    let manifest = milestone6_manifest(&directory);
+    let grammar = compile_package_with_manifest(&package, &manifest)
+        .expect("Milestone 6 package and manifest compile");
+    let mut formatter = FixtureFormatter::load(&directory, &["en", "pl"]);
+
+    for (locale, count, ending) in [
+        ("en", 1, "arrived with one item."),
+        ("en", 2, "arrived with 2 items."),
+        ("pl", 1, "przybył z jednym przedmiotem."),
+        ("pl", 2, "przybył z 2 przedmiotami."),
+        ("pl", 5, "przybył z 5 przedmiotów."),
+    ] {
+        let values = vec![DataBinding::new(
+            "itemCount".to_string(),
+            Value::Number(Rational::new(count, 1).expect("fixture count")),
+        )];
+        let generated = grammar
+            .generate_weighted_with_formatter(
+                &GenerationRequest {
+                    data: &values,
+                    ..GenerationRequest::with_seed(0)
+                },
+                LocaleRequest {
+                    requested: locale,
+                    fallbacks: &[],
+                },
+                &mut formatter,
+            )
+            .expect("localized fixture generates");
+        assert!(generated.text().ends_with(ending), "{locale}/{count}");
+        assert_eq!(
+            generated.message().expect("message trace").actual_locale(),
+            locale
+        );
+    }
+
+    let values = vec![DataBinding::new(
+        "itemCount".to_string(),
+        Value::Number(Rational::ONE),
+    )];
+    let fallback = grammar
+        .generate_weighted_with_formatter(
+            &GenerationRequest {
+                data: &values,
+                ..GenerationRequest::with_seed(0)
+            },
+            LocaleRequest {
+                requested: "fr",
+                fallbacks: &["en"],
+            },
+            &mut formatter,
+        )
+        .expect("ordered fallback resolves");
+    let trace = fallback.message().expect("fallback message trace");
+    assert_eq!(trace.requested_locale(), "fr");
+    assert_eq!(trace.actual_locale(), "en");
+}
+
+#[test]
+fn milestone6_invalid_files_report_missing_messages_and_schema_drift() {
+    let directory = fixture_path("packages/milestone6");
+    let manifest = milestone6_manifest(&directory);
+    for (index, (name, code)) in [
+        ("missing-message.meco.md", DiagnosticCode::MESSAGE_MISSING),
+        ("schema-drift.meco.md", DiagnosticCode::MESSAGE_ARGUMENT),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = fixture_path(&format!("packages/milestone6-invalid/{name}"));
+        let package = PackageInput {
+            root_id: "root".to_string(),
+            modules: vec![PackageSource {
+                canonical_id: "root".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(u32::try_from(index).expect("fixture index")),
+                    path.display().to_string(),
+                    fs::read_to_string(path).expect("read invalid Milestone 6 fixture"),
+                ),
+                resolved_imports: vec![],
+            }],
+        };
+        let error = compile_package_with_manifest(&package, &manifest)
+            .expect_err("invalid message fixture fails");
+        assert_eq!(error.diagnostics()[0].code(), *code, "{name}");
+    }
 }

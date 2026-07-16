@@ -14,11 +14,12 @@ context-free grammarâ€”headings define rules and list items define alternativesâ
 while adding the structure needed for game data, conditions, reuse, localization,
 and reliable long-running generation.
 
-> **Status:** v2 is in early implementation. The portable Rust/WASM foundation,
-> strict source parser, exact numeric/PRNG contracts, package boundary, and first
-> audit build; the compiler and generation runtime are not implemented yet. The
-> runnable proof of concept and its original
-> documentation live in
+> **Status:** v2 is under active implementation. The dependency-free core now
+> parses and compiles complete packages, executes exact typed `weighted/1`
+> generation, and resolves complete localized messages through a synchronous host
+> formatter in Rust, Deno, and Chrome. Stateful `diverse/1`, replay sessions, the
+> CLI, and editor tooling remain roadmap work. The original proof of concept and
+> its documentation live in
 > [`v1/`](v1/README.md).
 
 The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
@@ -484,6 +485,44 @@ The binding contributes data but no text. The formatter owns the rendered result
 A message-valued rule cannot be captured, suffixed, or wrapped in another visible
 rule fragment.
 
+Compilation receives a formatter manifest, so missing IDs, missing or extra
+arguments, and type drift fail before generation. A generated message crosses the
+host boundary as one ordered request containing its stable ID, typed values,
+requested locale, and explicit fallback chain. The formatter returns the complete
+text plus actual locale, environment identity, diagnostics, deterministic work
+units, and whether the result is replayable. It is synchronous and operates only
+over resources the host has already loaded; the core performs no locale I/O and
+contains no built-in plural engine.
+
+The Rust API exposes `compile_package_with_manifest`,
+`generate_weighted_structural`, and `generate_weighted_with_formatter`. The
+browser-neutral TypeScript wrapper accepts the same contract:
+
+```ts
+const compiled = meco.compilePackage(packageDescription, {
+  messages: [{
+    id: "arrival",
+    arguments: [
+      { name: "hero", type: { kind: "text" } },
+      { name: "count", type: { kind: "number" } },
+    ],
+  }],
+});
+if (!compiled.ok) throw new Error(compiled.error.message);
+
+const result = meco.generateWeighted(compiled.value, {
+  seed: 7n,
+  locale: "pl",
+  fallbackLocales: ["en"],
+  data: { itemCount: { kind: "number", numerator: 2n, denominator: 1n } },
+  formatter: (request) => formatFromPreloadedCatalog(request),
+});
+```
+
+See [`js/README.md`](js/README.md) and
+[`V2_INTERFACES.md`](V2_INTERFACES.md) for the concrete callback and wire
+contracts.
+
 ### Weights, empty output, and recursion
 
 Weights are positive relative base weights. Omitted weights are `1`, and decimals
@@ -732,9 +771,12 @@ static and dynamic exact weights, typed scalar/enum request data, guards, typed
 rule calls, emitting captures, ordered silent bindings, ordinary references, all
 literal/block forms, empty output, public entries, productive recursion, and
 opt-in binding/selection traces with exact evaluated weights.
-Complete messages still deliberately return `E_UNSUPPORTED_FEATURE` until the
-formatter milestone. Stateful sessions/diversity, formatter integration, the CLI,
-and editor tooling remain to be built. Use v1 for features outside this v2 subset.
+Stable external messages, typed message/input manifests, transitive
+complete-message effects, explicit locale fallback, formatter provenance, and
+synchronous Rust/JS formatter boundaries are also executable across the shared
+Rust/Deno/Chrome corpus. Stateful sessions/diversity, a production Fluent adapter,
+compound value types, the CLI, and editor tooling remain to be built. Use v1 for
+features outside this v2 subset.
 
 ## Name
 

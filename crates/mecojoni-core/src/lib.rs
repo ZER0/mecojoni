@@ -8,6 +8,7 @@ mod audit;
 mod compiler;
 mod diagnostic;
 mod error;
+mod formatter;
 mod front_matter;
 mod package;
 mod parser;
@@ -27,11 +28,16 @@ pub use audit::{
     CompositionFinding, WORD_TOKENIZER_VERSION, audit_composition, composition_profile_version,
 };
 pub use compiler::{
-    CompiledGrammar, GenerationLimits, GenerationRequest, GenerationResult, RuleAnalysis,
-    WEIGHTED_SAMPLER_VERSION, compile_package,
+    CompiledGrammar, GeneratedContent, GenerationLimits, GenerationRequest, GenerationResult,
+    RuleAnalysis, StructuralGenerationResult, WEIGHTED_SAMPLER_VERSION, compile_package,
+    compile_package_with_manifest,
 };
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use error::{MecoError, MecoResult};
+pub use formatter::{
+    Formatter, FormatterRequest, FormatterResult, InputDefinition, LocaleRequest, MessageArgument,
+    MessageDefinition, MessageManifest, MessageTrace, PackageManifest, SchemaType,
+};
 pub use front_matter::{
     FrontMatter, ImportDeclaration, InputDeclaration, TypeDeclaration, parse_front_matter,
 };

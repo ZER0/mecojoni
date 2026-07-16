@@ -10,9 +10,10 @@ extern crate alloc;
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 use mecojoni_core::{
-    CompiledGrammar, DataBinding, Diagnostic, GenerationLimits, GenerationRequest, MecoError,
-    PackageInput, PackageSource, Rational, ResolvedImport, Severity, SourceFile, SourceId, Value,
-    compile_package,
+    CompiledGrammar, DataBinding, Diagnostic, GeneratedContent, GenerationLimits,
+    GenerationRequest, LocaleRequest, MecoError, MessageArgument, MessageDefinition,
+    MessageManifest, PackageInput, PackageSource, Rational, ResolvedImport, SchemaType, Severity,
+    SourceFile, SourceId, Value, compile_package, compile_package_with_manifest,
 };
 
 mod wire;
@@ -29,6 +30,8 @@ pub const OP_PACKAGE_CREATE: u32 = 1;
 pub const OP_COMPILE: u32 = 2;
 pub const OP_GENERATE_WEIGHTED: u32 = 3;
 pub const OP_GENERATE_TYPED: u32 = 4;
+pub const OP_COMPILE_WITH_MANIFEST: u32 = 5;
+pub const OP_GENERATE_STRUCTURAL: u32 = 6;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_ERROR: u32 = 1;
@@ -38,6 +41,7 @@ const PAYLOAD_ERROR: u32 = 0;
 const PAYLOAD_PACKAGE: u32 = 1;
 const PAYLOAD_COMPILE: u32 = 2;
 const PAYLOAD_GENERATE: u32 = 3;
+const PAYLOAD_STRUCTURAL: u32 = 4;
 
 const MAX_MODULES: usize = 4_096;
 const MAX_IMPORTS_PER_MODULE: usize = 4_096;
@@ -232,6 +236,8 @@ fn dispatch(state: &mut State, operation: u32, input: &[u8]) -> u32 {
         OP_COMPILE => compile(state, input),
         OP_GENERATE_WEIGHTED => generate_weighted(state, input, false),
         OP_GENERATE_TYPED => generate_weighted(state, input, true),
+        OP_COMPILE_WITH_MANIFEST => compile_with_manifest(state, input),
+        OP_GENERATE_STRUCTURAL => generate_structural(state, input),
         _ => state.add_error(AbiDiagnostic::new(
             "E_ABI_OPERATION",
             format!("unknown ABI operation {operation}"),
@@ -272,8 +278,33 @@ fn compile(state: &mut State, input: &[u8]) -> u32 {
     state.add_value_result(HandleValue::Grammar(Box::new(grammar)), payload)
 }
 
+fn compile_with_manifest(state: &mut State, input: &[u8]) -> u32 {
+    let (package_handle, manifest) = match decode_compile_manifest_request(input) {
+        Ok(request) => request,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let grammar = match state.get(package_handle) {
+        Some(HandleValue::Package(package)) => {
+            match compile_package_with_manifest(package, &manifest) {
+                Ok(grammar) => grammar,
+                Err(error) => return add_core_error(state, &error),
+            }
+        }
+        Some(value) => {
+            return state.add_error(wrong_kind(
+                package_handle,
+                HandleKind::Package,
+                value.kind(),
+            ));
+        }
+        None => return state.add_error(stale_handle(package_handle)),
+    };
+    let payload = encode_compile_success(&grammar);
+    state.add_value_result(HandleValue::Grammar(Box::new(grammar)), payload)
+}
+
 fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
-    let request = match decode_generation_request(input, typed) {
+    let request = match decode_generation_request(input, typed, false) {
         Ok(request) => request,
         Err(diagnostic) => return state.add_error(diagnostic),
     };
@@ -309,6 +340,53 @@ fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
     }
 }
 
+fn generate_structural(state: &mut State, input: &[u8]) -> u32 {
+    let request = match decode_generation_request(input, true, true) {
+        Ok(request) => request,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let result = match state.get(request.grammar) {
+        Some(HandleValue::Grammar(grammar)) => grammar.generate_weighted_structural(
+            &GenerationRequest {
+                entry: request.entry.as_deref(),
+                seed: request.seed,
+                limits: request.limits,
+                data: &request.data,
+                trace_bindings: request.trace_bindings,
+                trace_selections: request.trace_selections,
+            },
+            Some(LocaleRequest {
+                requested: request
+                    .requested_locale
+                    .as_deref()
+                    .expect("localized request decoder sets a locale"),
+                fallbacks: &request
+                    .fallback_locales
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            }),
+        ),
+        Some(value) => {
+            return state.add_error(wrong_kind(
+                request.grammar,
+                HandleKind::Grammar,
+                value.kind(),
+            ));
+        }
+        None => return state.add_error(stale_handle(request.grammar)),
+    };
+    match result {
+        Ok(result) => state.add_result(ResultRecord {
+            status: STATUS_SUCCESS,
+            value_handle: 0,
+            value_claimed: false,
+            payload: encode_structural_success(&result),
+        }),
+        Err(error) => add_core_error(state, &error),
+    }
+}
+
 struct AbiGenerationRequest {
     grammar: u32,
     seed: u64,
@@ -317,6 +395,8 @@ struct AbiGenerationRequest {
     data: Vec<DataBinding>,
     trace_bindings: bool,
     trace_selections: bool,
+    requested_locale: Option<String>,
+    fallback_locales: Vec<String>,
 }
 
 fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
@@ -335,6 +415,7 @@ fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
 fn decode_generation_request(
     input: &[u8],
     typed: bool,
+    localized: bool,
 ) -> Result<AbiGenerationRequest, AbiDiagnostic> {
     let mut decoder = decoder(input)?;
     let grammar = decoder.u32().map_err(wire_diagnostic)?;
@@ -381,6 +462,17 @@ fn decode_generation_request(
     } else {
         (false, false, Vec::new())
     };
+    let (requested_locale, fallback_locales) = if localized {
+        let requested = decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?;
+        let count = count(&mut decoder, 256, "fallback locale")?;
+        let mut fallbacks = Vec::with_capacity(count);
+        for _ in 0..count {
+            fallbacks.push(decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?);
+        }
+        (Some(requested), fallbacks)
+    } else {
+        (None, Vec::new())
+    };
     decoder.finish().map_err(wire_diagnostic)?;
     if grammar == 0 {
         return Err(AbiDiagnostic::new(
@@ -396,7 +488,46 @@ fn decode_generation_request(
         data,
         trace_bindings,
         trace_selections,
+        requested_locale,
+        fallback_locales,
     })
+}
+
+fn decode_compile_manifest_request(input: &[u8]) -> Result<(u32, MessageManifest), AbiDiagnostic> {
+    let mut decoder = decoder(input)?;
+    let handle = decoder.u32().map_err(wire_diagnostic)?;
+    if handle == 0 {
+        return Err(AbiDiagnostic::new(
+            "E_ABI_HANDLE_STALE",
+            "handle 0 is always invalid",
+        ));
+    }
+    let message_count = count(&mut decoder, 65_536, "manifest message")?;
+    let mut messages = Vec::with_capacity(message_count);
+    for _ in 0..message_count {
+        let id = decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?;
+        let argument_count = count(&mut decoder, 4_096, "message argument")?;
+        let mut arguments = Vec::with_capacity(argument_count);
+        for _ in 0..argument_count {
+            let name = decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?;
+            let type_ = match decoder.u8().map_err(wire_diagnostic)? {
+                0 => SchemaType::Text,
+                1 => SchemaType::Number,
+                2 => SchemaType::Boolean,
+                3 => SchemaType::Enum(decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?),
+                _ => {
+                    return Err(AbiDiagnostic::new(
+                        "E_ABI_WIRE_VALUE",
+                        "unknown manifest schema type",
+                    ));
+                }
+            };
+            arguments.push(MessageArgument { name, type_ });
+        }
+        messages.push(MessageDefinition { id, arguments });
+    }
+    decoder.finish().map_err(wire_diagnostic)?;
+    Ok((handle, MessageManifest { messages }))
 }
 
 fn decode_value(decoder: &mut Decoder<'_>) -> Result<Value, AbiDiagnostic> {
@@ -570,28 +701,65 @@ fn encode_generation_success(result: &mecojoni_core::GenerationResult, typed: bo
     encoder.u32(result.expansions());
     encoder.u32(result.sampler_words());
     if typed {
-        encoder.u32(u32::try_from(result.bindings().len()).unwrap_or(u32::MAX));
-        for binding in result.bindings() {
-            encoder.string(binding.name());
-            encoder.u8(u8::from(binding.emitted()));
-            encode_value(&mut encoder, binding.value());
+        encode_traces(&mut encoder, result.bindings(), result.selections());
+    }
+    encoder.into_bytes()
+}
+
+fn encode_structural_success(result: &mecojoni_core::StructuralGenerationResult) -> Vec<u8> {
+    let mut encoder = payload(PAYLOAD_STRUCTURAL);
+    match result.content() {
+        GeneratedContent::Text(text) => {
+            encoder.u8(0);
+            encoder.string(text);
         }
-        encoder.u32(u32::try_from(result.selections().len()).unwrap_or(u32::MAX));
-        for selection in result.selections() {
-            encoder.string(selection.rule());
-            encoder.u32(selection.selected_production());
-            encoder.u32(u32::try_from(selection.eligible().len()).unwrap_or(u32::MAX));
-            for weight in selection.eligible() {
-                encoder.u32(weight.production());
-                encoder.u64(u64::from_le_bytes(
-                    weight.base_weight().numerator().to_le_bytes(),
-                ));
-                encoder.u64(weight.base_weight().denominator());
-                encoder.u64(weight.normalized_weight());
+        GeneratedContent::Message(request) => {
+            encoder.u8(1);
+            encoder.string(request.message_id());
+            encoder.u32(u32::try_from(request.arguments().len()).unwrap_or(u32::MAX));
+            for (name, value) in request.arguments() {
+                encoder.string(name);
+                encode_value(&mut encoder, value);
+            }
+            encoder.string(request.requested_locale());
+            encoder.u32(u32::try_from(request.fallback_locales().len()).unwrap_or(u32::MAX));
+            for locale in request.fallback_locales() {
+                encoder.string(locale);
             }
         }
     }
+    encoder.string(result.entry());
+    encoder.u32(result.expansions());
+    encoder.u32(result.sampler_words());
+    encode_traces(&mut encoder, result.bindings(), result.selections());
     encoder.into_bytes()
+}
+
+fn encode_traces(
+    encoder: &mut Encoder,
+    bindings: &[mecojoni_core::BindingTrace],
+    selections: &[mecojoni_core::SelectionTrace],
+) {
+    encoder.u32(u32::try_from(bindings.len()).unwrap_or(u32::MAX));
+    for binding in bindings {
+        encoder.string(binding.name());
+        encoder.u8(u8::from(binding.emitted()));
+        encode_value(encoder, binding.value());
+    }
+    encoder.u32(u32::try_from(selections.len()).unwrap_or(u32::MAX));
+    for selection in selections {
+        encoder.string(selection.rule());
+        encoder.u32(selection.selected_production());
+        encoder.u32(u32::try_from(selection.eligible().len()).unwrap_or(u32::MAX));
+        for weight in selection.eligible() {
+            encoder.u32(weight.production());
+            encoder.u64(u64::from_le_bytes(
+                weight.base_weight().numerator().to_le_bytes(),
+            ));
+            encoder.u64(weight.base_weight().denominator());
+            encoder.u64(weight.normalized_weight());
+        }
+    }
 }
 
 fn encode_value(encoder: &mut Encoder, value: &Value) {
@@ -834,8 +1002,9 @@ mod tests {
     use alloc::{string::ToString, vec};
 
     use super::{
-        ABI_VERSION, HandleKind, HandleValue, OP_COMPILE, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE,
-        PAYLOAD_ERROR, PAYLOAD_GENERATE, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION,
+        ABI_VERSION, HandleKind, HandleValue, OP_COMPILE, OP_COMPILE_WITH_MANIFEST,
+        OP_GENERATE_STRUCTURAL, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE, PAYLOAD_ERROR,
+        PAYLOAD_GENERATE, PAYLOAD_STRUCTURAL, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION,
         dispatch, meco_abi_version, meco_core_api_version,
     };
     use crate::wire::{Decoder, Encoder};
@@ -861,6 +1030,61 @@ mod tests {
         let mut encoder = Encoder::new();
         encoder.u32(WIRE_VERSION);
         encoder.u32(handle);
+        encoder.into_bytes()
+    }
+
+    fn localized_package_request() -> Vec<u8> {
+        let source = concat!(
+            "---\nmeco: 2\nmodule: root\nentry: arrival\n",
+            "inputs:\n  itemCount: number\nexports: [arrival]\n---\n\n",
+            "# arrival\n- &arrival <- hero: \"Ada\", count: $itemCount\n",
+        );
+        let mut encoder = Encoder::new();
+        encoder.u32(WIRE_VERSION);
+        encoder.string("root");
+        encoder.u32(1);
+        encoder.string("root");
+        encoder.u32(0);
+        encoder.string("root.meco.md");
+        encoder.bytes(source.as_bytes());
+        encoder.u32(0);
+        encoder.into_bytes()
+    }
+
+    fn compile_manifest_request(handle: u32) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder.u32(WIRE_VERSION);
+        encoder.u32(handle);
+        encoder.u32(1);
+        encoder.string("arrival");
+        encoder.u32(2);
+        encoder.string("hero");
+        encoder.u8(0);
+        encoder.string("count");
+        encoder.u8(1);
+        encoder.into_bytes()
+    }
+
+    fn structural_request(grammar: u32) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder.u32(WIRE_VERSION);
+        encoder.u32(grammar);
+        encoder.u64(0);
+        encoder.u8(0);
+        encoder.u32(80);
+        encoder.u32(2_000);
+        encoder.u32(16_384);
+        encoder.u32(65_536);
+        encoder.u32(8_192);
+        encoder.u8(0);
+        encoder.u8(0);
+        encoder.u32(1);
+        encoder.string("itemCount");
+        encoder.u8(1);
+        encoder.u64(2);
+        encoder.u64(1);
+        encoder.string("en");
+        encoder.u32(0);
         encoder.into_bytes()
     }
 
@@ -930,6 +1154,49 @@ mod tests {
             assert!(!state.dispose(handle));
         }
         assert!(state.handles.is_empty());
+    }
+
+    #[test]
+    fn manifest_compile_and_structural_generation_return_typed_message_request() {
+        let mut state = State::new();
+        let package_result = dispatch(&mut state, OP_PACKAGE_CREATE, &localized_package_request());
+        let package = state
+            .claim_result_value(package_result)
+            .expect("package handle");
+        let compile_result = dispatch(
+            &mut state,
+            OP_COMPILE_WITH_MANIFEST,
+            &compile_manifest_request(package),
+        );
+        assert_eq!(
+            state.result(compile_result).expect("compile result").status,
+            STATUS_SUCCESS
+        );
+        let grammar = state
+            .claim_result_value(compile_result)
+            .expect("grammar handle");
+        let generation = dispatch(
+            &mut state,
+            OP_GENERATE_STRUCTURAL,
+            &structural_request(grammar),
+        );
+        let record = state.result(generation).expect("structural result");
+        assert_eq!(record.status, STATUS_SUCCESS);
+        let mut decoder = Decoder::new(&record.payload);
+        assert_eq!(decoder.u32(), Ok(WIRE_VERSION));
+        assert_eq!(decoder.u32(), Ok(PAYLOAD_STRUCTURAL));
+        assert_eq!(decoder.u8(), Ok(1));
+        assert_eq!(decoder.string(64), Ok("arrival".to_string()));
+        assert_eq!(decoder.u32(), Ok(2));
+        assert_eq!(decoder.string(64), Ok("hero".to_string()));
+        assert_eq!(decoder.u8(), Ok(0));
+        assert_eq!(decoder.string(64), Ok("Ada".to_string()));
+        assert_eq!(decoder.string(64), Ok("count".to_string()));
+        assert_eq!(decoder.u8(), Ok(1));
+        assert_eq!(decoder.u64(), Ok(2));
+        assert_eq!(decoder.u64(), Ok(1));
+        assert_eq!(decoder.string(64), Ok("en".to_string()));
+        assert_eq!(decoder.u32(), Ok(0));
     }
 
     #[test]

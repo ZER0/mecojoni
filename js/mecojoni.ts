@@ -2,11 +2,14 @@ const WIRE_VERSION = 1;
 const OP_PACKAGE_CREATE = 1;
 const OP_COMPILE = 2;
 const OP_GENERATE_TYPED = 4;
+const OP_COMPILE_WITH_MANIFEST = 5;
+const OP_GENERATE_STRUCTURAL = 6;
 
 const PAYLOAD_ERROR = 0;
 const PAYLOAD_PACKAGE = 1;
 const PAYLOAD_COMPILE = 2;
 const PAYLOAD_GENERATE = 3;
+const PAYLOAD_STRUCTURAL = 4;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -76,6 +79,53 @@ export interface CompileSummary {
   defaultEntry?: string;
 }
 
+export type SchemaType =
+  | { kind: "text" }
+  | { kind: "number" }
+  | { kind: "boolean" }
+  | { kind: "enum"; name: string };
+
+export interface MessageArgumentSchema {
+  name: string;
+  type: SchemaType;
+}
+
+export interface MessageSchema {
+  id: string;
+  arguments: readonly MessageArgumentSchema[];
+}
+
+export interface MessageManifest {
+  messages: readonly MessageSchema[];
+}
+
+export interface FormatterRequest {
+  messageId: string;
+  arguments: Readonly<Record<string, MecoValue>>;
+  requestedLocale: string;
+  fallbackLocales: readonly string[];
+}
+
+export interface FormatterResponse {
+  text: string;
+  actualLocale: string;
+  environmentHash: string;
+  diagnostics?: readonly MecoDiagnostic[];
+  workUnits: number;
+  replayable: boolean;
+}
+
+export type MecoFormatter = (request: FormatterRequest) => FormatterResponse;
+
+export interface MessageOutput {
+  id: string;
+  requestedLocale: string;
+  actualLocale: string;
+  environmentHash: string;
+  workUnits: number;
+  replayable: boolean;
+}
+
 export interface GenerationOutput {
   text: string;
   entry: string;
@@ -83,6 +133,8 @@ export interface GenerationOutput {
   samplerWords: number;
   bindings: BindingOutput[];
   selections: SelectionOutput[];
+  formatterDiagnostics: MecoDiagnostic[];
+  message?: MessageOutput;
 }
 
 export type MecoValue =
@@ -124,6 +176,9 @@ export interface GenerationOptions {
   data?: Readonly<Record<string, MecoValue>>;
   traceBindings?: boolean;
   traceSelections?: boolean;
+  locale?: string;
+  fallbackLocales?: readonly string[];
+  formatter?: MecoFormatter;
 }
 
 const DEFAULT_LIMITS: GenerationLimitOptions = {
@@ -246,13 +301,20 @@ export class Mecojoni {
     }
   }
 
-  compile(mecoPackage: MecoPackage): MecoResult<CompiledGrammar> {
+  compile(
+    mecoPackage: MecoPackage,
+    manifest?: MessageManifest,
+  ): MecoResult<CompiledGrammar> {
     let decoded: DecodedResult | undefined;
     try {
       this.assertOwner(mecoPackage);
       const writer = request();
       writer.u32(mecoPackage.handle);
-      decoded = this.invoke(OP_COMPILE, writer.finish());
+      if (manifest !== undefined) writer.manifest(manifest);
+      decoded = this.invoke(
+        manifest === undefined ? OP_COMPILE : OP_COMPILE_WITH_MANIFEST,
+        writer.finish(),
+      );
       if (decoded.status !== 0) return decodeFailure(decoded);
       expectKind(decoded, PAYLOAD_COMPILE);
       const reader = decoded.reader;
@@ -276,11 +338,14 @@ export class Mecojoni {
     }
   }
 
-  compilePackage(description: PackageDescription): MecoResult<CompiledGrammar> {
+  compilePackage(
+    description: PackageDescription,
+    manifest?: MessageManifest,
+  ): MecoResult<CompiledGrammar> {
     const created = this.createPackage(description);
     if (!created.ok) return created;
     try {
-      return this.compile(created.value);
+      return this.compile(created.value, manifest);
     } finally {
       created.value.dispose();
     }
@@ -314,34 +379,105 @@ export class Mecojoni {
         writer.string(name);
         writer.value(value);
       }
-      const decoded = this.invoke(OP_GENERATE_TYPED, writer.finish());
+      const localized = options.formatter !== undefined || options.locale !== undefined ||
+        (options.fallbackLocales?.length ?? 0) !== 0;
+      if (localized) {
+        if (options.formatter === undefined) {
+          return localFailure("E_FORMATTER_REQUIRED", "localized generation requires a formatter");
+        }
+        if (options.locale === undefined) {
+          return localFailure("E_LOCALE", "localized generation requires an explicit locale");
+        }
+        writer.string(options.locale);
+        writer.u32(options.fallbackLocales?.length ?? 0);
+        for (const fallback of options.fallbackLocales ?? []) writer.string(fallback);
+      }
+      const decoded = this.invoke(
+        localized ? OP_GENERATE_STRUCTURAL : OP_GENERATE_TYPED,
+        writer.finish(),
+      );
       if (decoded.status !== 0) return decodeFailure(decoded);
-      expectKind(decoded, PAYLOAD_GENERATE);
-      const value = {
-        text: decoded.reader.string(),
+      if (!localized) {
+        expectKind(decoded, PAYLOAD_GENERATE);
+        const value = {
+          text: decoded.reader.string(),
+          entry: decoded.reader.string(),
+          expansions: decoded.reader.u32(),
+          samplerWords: decoded.reader.u32(),
+          ...readTraces(decoded.reader),
+          formatterDiagnostics: [],
+        };
+        decoded.reader.finish();
+        return { ok: true, value, diagnostics: [] };
+      }
+
+      expectKind(decoded, PAYLOAD_STRUCTURAL);
+      const contentKind = decoded.reader.u8();
+      let text: string | undefined;
+      let formatterRequest: FormatterRequest | undefined;
+      if (contentKind === 0) {
+        text = decoded.reader.string();
+      } else if (contentKind === 1) {
+        const messageId = decoded.reader.string();
+        const argumentCount = decoded.reader.u32();
+        const argumentEntries = Array.from(
+          { length: argumentCount },
+          () => [decoded.reader.string(), Object.freeze(decoded.reader.value())] as const,
+        );
+        formatterRequest = {
+          messageId,
+          arguments: Object.freeze(Object.fromEntries(argumentEntries)),
+          requestedLocale: decoded.reader.string(),
+          fallbackLocales: Object.freeze(
+            Array.from({ length: decoded.reader.u32() }, () => decoded.reader.string()),
+          ),
+        };
+      } else {
+        throw new Error(`Invalid structural content kind ${contentKind}`);
+      }
+      const structural = {
         entry: decoded.reader.string(),
         expansions: decoded.reader.u32(),
         samplerWords: decoded.reader.u32(),
-        bindings: Array.from({ length: decoded.reader.u32() }, () => ({
-          name: decoded.reader.string(),
-          emitted: decodeBoolean(decoded.reader.u8(), "binding emitted flag"),
-          value: decoded.reader.value(),
-        })),
-        selections: Array.from({ length: decoded.reader.u32() }, () => ({
-          rule: decoded.reader.string(),
-          selectedProduction: decoded.reader.u32(),
-          eligible: Array.from({ length: decoded.reader.u32() }, () => ({
-            production: decoded.reader.u32(),
-            baseWeight: {
-              numerator: decoded.reader.i64(),
-              denominator: decoded.reader.u64(),
-            },
-            normalizedWeight: decoded.reader.u64(),
-          })),
-        })),
+        ...readTraces(decoded.reader),
       };
       decoded.reader.finish();
-      return { ok: true, value, diagnostics: [] };
+      if (formatterRequest === undefined) {
+        return {
+          ok: true,
+          value: { text: text ?? "", ...structural, formatterDiagnostics: [] },
+          diagnostics: [],
+        };
+      }
+      let formatted: FormatterResponse;
+      try {
+        formatted = options.formatter!(formatterRequest);
+      } catch (error) {
+        return localFailure(
+          "E_FORMATTER",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      if (isPromiseLike(formatted)) {
+        return localFailure("E_FORMATTER", "formatter callback must be synchronous");
+      }
+      const formatterFailure = validateFormatterResponse(formatterRequest, formatted, limits);
+      if (formatterFailure !== undefined) return formatterFailure;
+      const formatterDiagnostics = [...(formatted.diagnostics ?? [])];
+      const value: GenerationOutput = {
+        text: formatted.text,
+        ...structural,
+        formatterDiagnostics,
+        message: {
+          id: formatterRequest.messageId,
+          requestedLocale: formatterRequest.requestedLocale,
+          actualLocale: formatted.actualLocale,
+          environmentHash: formatted.environmentHash,
+          workUnits: formatted.workUnits,
+          replayable: formatted.replayable,
+        },
+      };
+      return { ok: true, value, diagnostics: formatterDiagnostics };
     } catch (error) {
       return caughtFailure(error);
     }
@@ -424,6 +560,109 @@ function encodePackage(description: PackageDescription): Uint8Array {
     }
   }
   return writer.finish();
+}
+
+function readTraces(reader: Reader): {
+  bindings: BindingOutput[];
+  selections: SelectionOutput[];
+} {
+  return {
+    bindings: Array.from({ length: reader.u32() }, () => ({
+      name: reader.string(),
+      emitted: decodeBoolean(reader.u8(), "binding emitted flag"),
+      value: reader.value(),
+    })),
+    selections: Array.from({ length: reader.u32() }, () => ({
+      rule: reader.string(),
+      selectedProduction: reader.u32(),
+      eligible: Array.from({ length: reader.u32() }, () => ({
+        production: reader.u32(),
+        baseWeight: {
+          numerator: reader.i64(),
+          denominator: reader.u64(),
+        },
+        normalizedWeight: reader.u64(),
+      })),
+    })),
+  };
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return typeof value === "object" && value !== null && "then" in value &&
+    typeof (value as { then?: unknown }).then === "function";
+}
+
+function validateFormatterResponse(
+  request: FormatterRequest,
+  response: FormatterResponse,
+  limits: GenerationLimitOptions,
+): MecoResult<GenerationOutput> | undefined {
+  if (typeof response !== "object" || response === null) {
+    return localFailure("E_FORMATTER", "formatter must return a result object");
+  }
+  if (typeof response.text !== "string") {
+    return localFailure("E_FORMATTER", "formatter result text must be a string");
+  }
+  let bytes: number;
+  try {
+    bytes = encodeStrict(response.text).length;
+  } catch (error) {
+    return localFailure(
+      "E_FORMATTER",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const scalars = Array.from(response.text).length;
+  if (scalars > limits.maxOutputScalars || bytes > limits.maxOutputBytes) {
+    return localFailure(
+      "E_LIMIT_OUTPUT",
+      `formatted output exceeds scalar/byte limits (${scalars}/${bytes})`,
+    );
+  }
+  if (
+    typeof response.actualLocale !== "string" ||
+    ![request.requestedLocale, ...request.fallbackLocales].includes(response.actualLocale)
+  ) {
+    return localFailure(
+      "E_LOCALE",
+      "formatter actualLocale is outside the requested fallback chain",
+    );
+  }
+  if (!Number.isSafeInteger(response.workUnits) || response.workUnits < 0) {
+    return localFailure("E_FORMATTER", "formatter workUnits must be a non-negative integer");
+  }
+  if (response.workUnits > 10_000) {
+    return localFailure("E_FORMATTER_LIMIT", "formatter workUnits exceed 10000");
+  }
+  if (typeof response.replayable !== "boolean") {
+    return localFailure("E_FORMATTER", "formatter replayable must be boolean");
+  }
+  if (typeof response.environmentHash !== "string") {
+    return localFailure("E_FORMATTER", "formatter environmentHash must be a string");
+  }
+  if (response.replayable && response.environmentHash.length === 0) {
+    return localFailure(
+      "E_FORMATTER",
+      "a replayable formatter requires a non-empty environmentHash",
+    );
+  }
+  if (response.diagnostics !== undefined && !Array.isArray(response.diagnostics)) {
+    return localFailure("E_FORMATTER", "formatter diagnostics must be an array");
+  }
+  const diagnostics = [...(response.diagnostics ?? [])];
+  if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+    const primary: MecoDiagnostic = {
+      code: "E_FORMATTER",
+      severity: "error",
+      message: "formatter reported a fatal diagnostic",
+    };
+    return {
+      ok: false,
+      error: { message: primary.message, diagnostics: [primary, ...diagnostics] },
+      diagnostics: [primary, ...diagnostics],
+    };
+  }
+  return undefined;
 }
 
 function request(): Writer {
@@ -538,6 +777,32 @@ class Writer {
         this.u8(3);
         this.string(value.value);
         break;
+    }
+  }
+
+  manifest(manifest: MessageManifest): void {
+    this.u32(manifest.messages.length);
+    for (const message of manifest.messages) {
+      this.string(message.id);
+      this.u32(message.arguments.length);
+      for (const argument of message.arguments) {
+        this.string(argument.name);
+        switch (argument.type.kind) {
+          case "text":
+            this.u8(0);
+            break;
+          case "number":
+            this.u8(1);
+            break;
+          case "boolean":
+            this.u8(2);
+            break;
+          case "enum":
+            this.u8(3);
+            this.string(argument.type.name);
+            break;
+        }
+      }
     }
   }
 

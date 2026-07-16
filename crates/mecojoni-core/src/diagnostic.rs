@@ -49,6 +49,14 @@ impl DiagnosticCode {
     pub const VALUE_NAME: Self = Self("E_VALUE_NAME");
     pub const BINDING_NAME: Self = Self("E_BINDING_NAME");
     pub const REQUEST_DATA: Self = Self("E_REQUEST_DATA");
+    pub const MESSAGE_MANIFEST: Self = Self("E_MESSAGE_MANIFEST");
+    pub const MESSAGE_MISSING: Self = Self("E_MESSAGE_MISSING");
+    pub const MESSAGE_ARGUMENT: Self = Self("E_MESSAGE_ARGUMENT");
+    pub const MESSAGE_EFFECT: Self = Self("E_MESSAGE_EFFECT");
+    pub const FORMATTER_REQUIRED: Self = Self("E_FORMATTER_REQUIRED");
+    pub const FORMATTER: Self = Self("E_FORMATTER");
+    pub const LOCALE: Self = Self("E_LOCALE");
+    pub const FORMATTER_LIMIT: Self = Self("E_FORMATTER_LIMIT");
     pub const NO_ELIGIBLE_PRODUCTION: Self = Self("E_NO_ELIGIBLE_PRODUCTION");
     pub const WEIGHT_VALUE: Self = Self("E_WEIGHT_VALUE");
     pub const UNSUPPORTED_FEATURE: Self = Self("E_UNSUPPORTED_FEATURE");

@@ -44,8 +44,12 @@ entry, immutable rule-analysis facts, and compiler warnings without exposing
 mutable rule or production collections. The executable subset includes exact
 static/dynamic weights, typed scalar and enum data, guards, typed calls, captures,
 ordered bindings, ordinary rule references, all literal/block forms, empty output,
-and productive recursion. Complete external messages remain the one parsed
-later-phase body feature that fails with `E_UNSUPPORTED_FEATURE`.
+productive recursion, and complete external messages. Message-bearing packages
+use `compile_package_with_manifest(&PackageInput, &MessageManifest)`. Compilation
+checks the portable ID profile and exact named argument types, computes the
+transitive complete-message effect, and rejects captures, visible composition,
+multiple messages, or message-valued silent bindings. `CompiledGrammar::manifest`
+returns a deeply owned input/message schema for host serialization.
 
 `CompiledGrammar::generate_weighted(&GenerationRequest)` is stateless. A request
 contains a seed, an optional qualified public entry, an immutable `&[DataBinding]`,
@@ -60,6 +64,18 @@ therefore consumes at least one PRNG word. Expansion uses heap frames with a bod
 cursor, so native call-stack depth and production width do not define language
 limits. `GenerationResult` returns text, the resolved entry, and exact expansion
 and sampler-word counters plus optional ordered `BindingTrace` values.
+
+`generate_weighted_structural(request, locale)` stops at either ordinary text or
+one owned `FormatterRequest { message_id, arguments, requested_locale,
+fallback_locales }`. `generate_weighted_with_formatter` synchronously passes that
+request to a side-effect-free `Formatter` over already-loaded resources and then
+validates the complete response. `FormatterResult` contains text, actual locale,
+environment hash, diagnostics, work units, and a replayability flag. Actual locale
+must occur in the explicit request chain; formatter work is capped at 10,000; a
+replayable result requires a nonempty environment identity; fatal formatter
+diagnostics and final UTF-8/scalar limit failures abort without partial text.
+Successful `GenerationResult` values retain formatter warnings and coarse
+`MessageTrace` provenance.
 
 ```rust
 let data = [
@@ -150,13 +166,18 @@ are rejected, and trailing bytes are errors.
 | compile | 2 | package handle | grammar handle plus entries/default/warnings payload |
 | weighted generate (legacy scalar-free request) | 3 | grammar handle, `u64` seed, optional entry, five `u32` limits | text/entry/work-counter payload |
 | typed weighted generate | 4 | operation-3 fields plus trace flags and typed request-value map | text/entry/work-counter, binding-trace, and selection-trace payload |
+| compile with message manifest | 5 | package handle plus message count; each message has ID and ordered named schema types | grammar handle plus entries/default/warnings payload |
+| structural typed generate | 6 | operation-4 fields plus requested locale and ordered fallback strings | ordinary text or one typed formatter request, then entry/work counters and traces |
 
 Generation limits are depth, expansions, output Unicode scalars, output UTF-8
 bytes, and sampler words in that order. A `u64` is always little-endian and the
 TypeScript API accepts it as `bigint`.
 
 Operation 3 remains byte-for-byte compatible with the first ABI-1 vertical slice;
-operation 4 is the additive typed extension used by current wrappers. Request
+operation 4 is the additive typed extension used by message-free requests.
+Operation 5 compiles message-bearing packages without changing operation 2.
+Operation 6 produces structure for a synchronous host callback without WASM
+imports, host re-entry, or locale I/O inside the module. Request
 values use a one-byte kind: text `0` plus `str`; number `1` plus signed
 two's-complement `i64` numerator and positive `u64` denominator; boolean `2` plus
 `0` or `1`; enum `3` plus its member `str`. The request map is canonically sorted
@@ -193,7 +214,8 @@ counter supports lifecycle tests and host leak telemetry. Dropping the WebAssemb
 instance releases all remaining handles and allocator state.
 
 Response payloads begin with `wire_version` and a kind: error `0`, package `1`,
-compile `2`, or generation `3`. Diagnostics encode code, severity, optional source
+compile `2`, generation `3`, or structural generation `4`. Diagnostics encode
+code, severity, optional source
 ID plus byte/scalar span as `u64`s, and message. Compile success encodes entries,
 an optional default, and warnings. Generation success encodes text, resolved
 entry, expansions, and sampler words. The wrapper claims any value handle and
@@ -215,6 +237,14 @@ values rather than unclassified JS exceptions. The wrapper rejects unpaired
 UTF-16 surrogates before allocation. Deno is the normative JS integration host;
 automated Chrome and in-app browser smoke tests load the identical `.wasm`
 artifact through the same browser-neutral wrapper.
+
+The wrapper's `compilePackage(description, manifest?)` selects operation 5 when a
+manifest is present. `generateWeighted` selects operation 6 when `locale` and a
+synchronous `formatter` callback are supplied. The wrapper invokes the callback
+only after the WASM call has returned, validates the formatter result with the
+same locale/work/provenance/output rules, and exposes message provenance plus
+successful formatter diagnostics. A promise-like callback result is rejected;
+applications preload catalogs before generation.
 
 ## CLI streams and statuses (`cli/1`)
 

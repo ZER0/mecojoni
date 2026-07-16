@@ -167,16 +167,16 @@ the README compile and generate exactly as documented through Rust and WASM.
 
 Add localization without embedding a localization system in the core.
 
-- [ ] Implement stable `&message` references and typed `<-` arguments.
-- [ ] Define a synchronous host formatter request/result protocol.
-- [ ] Enforce the transitive complete-message effect.
-- [ ] Reject message capture, suffixing, wrapping, multiple visible messages, and
+- [x] Implement stable `&message` references and typed `<-` arguments.
+- [x] Define a synchronous host formatter request/result protocol.
+- [x] Enforce the transitive complete-message effect.
+- [x] Reject message capture, suffixing, wrapping, multiple visible messages, and
   message-valued non-emitting bindings.
-- [ ] Build and validate message/input manifests.
-- [ ] Support explicit locale and fallback information without ambient globals.
-- [ ] Add a test formatter for Rust integration tests and callback/protocol support
+- [x] Build and validate message/input manifests.
+- [x] Support explicit locale and fallback information without ambient globals.
+- [x] Add a test formatter for Rust integration tests and callback/protocol support
   in the WASM wrapper.
-- [ ] Add at least English and one locale with `few`/`many` categories to the
+- [x] Add at least English and one locale with `few`/`many` categories to the
   integration corpus.
 
 **Exit gate:** internally generated values feed a localized complete message in
