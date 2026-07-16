@@ -613,6 +613,25 @@ units, and whether the result is replayable. It is synchronous and operates only
 over resources the host has already loaded; the core performs no locale I/O and
 contains no built-in plural engine.
 
+A filesystem-backed Rust integration test proves this generic boundary against
+the real `fluent-bundle` crate. Its `.meco` package passes text, exact integral
+number, and enum arguments into English and Polish `.ftl` resources; Fluent then
+selects grammatical gender and the `one`, `few`, `many`, and `other` cardinal
+categories. The same test checks ordered locale fallback, formatter provenance,
+and Fluent's default bidirectional-isolation marks. `fluent-bundle` is strictly a
+test-only dependency, so the production core remains dependency-free and
+`#![no_std] + alloc`:
+
+```sh
+cargo test -p mecojoni-core --test fluent_integration
+```
+
+See the [test adapter](crates/mecojoni-core/tests/fluent_integration.rs) and its
+[Meco/Fluent fixtures](crates/mecojoni-core/tests/fixtures/packages/fluent/) for
+the complete executable example. This validates how a standards-based adapter
+fits the interface; a reusable production Fluent adapter package remains a
+separate deferred deliverable.
+
 The Rust API exposes `compile_package_with_manifest`,
 `generate_weighted_structural`, and `generate_weighted_with_formatter`. The
 browser-neutral TypeScript wrapper accepts the same contract:
@@ -1002,7 +1021,9 @@ initial editor grammar are executable as well. Static trace-off weighted rules u
 precomputed cumulative indexes, and production-ID collision checks are
 `O(n log n)`; both optimizations have committed native/WASM evidence. A production
 Fluent adapter and compound value records are explicitly deferred extensions, not
-unimplemented v2 release promises. See [COMPATIBILITY.md](COMPATIBILITY.md),
+unimplemented v2 release promises. The generic boundary is nevertheless exercised
+against real Fluent resources by a Rust-only dev-dependency integration test. See
+[COMPATIBILITY.md](COMPATIBILITY.md),
 [CONFORMANCE.md](CONFORMANCE.md), [RELEASE.md](RELEASE.md), the frozen
 [bytecode format](BYTECODE_FORMAT.md), and its completed
 [implementation plan](BYTECODE_FORMAT_PLAN.md).

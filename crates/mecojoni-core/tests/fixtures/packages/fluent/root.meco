@@ -1,0 +1,21 @@
+---
+meco: 2
+module: fluent-demo
+entry: arrival
+
+types:
+  Gender: [female, male, other]
+
+inputs:
+  playerName: text
+  itemCount: number
+  gender: Gender
+
+exports: [arrival]
+---
+
+# arrival
+- &arrival <-
+    name: $playerName
+    count: $itemCount
+    gender: $gender

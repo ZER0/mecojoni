@@ -1039,9 +1039,11 @@ and memory decision the host makes explicitly.
 ### Generic boundary, Fluent adapter
 
 The core defines a small synchronous formatter interface over already-loaded
-resources. An optional `@mecojoni/fluent` package implements it with Fluent. This
-keeps the core dependency-free while avoiding a bespoke plural/gender/number/date
-engine.
+resources. A future optional Fluent adapter package can implement that interface
+without adding Fluent to the core. A Rust integration proof already exercises the
+boundary with the real `fluent-bundle` crate strictly as a dev dependency. This
+keeps the production core dependency-free while avoiding a bespoke
+plural/gender/number/date engine.
 
 A formatter is always side-effect-free and performs no I/O. A formatter used in
 replayable generation is also deterministic: the same canonical arguments,
@@ -1486,13 +1488,17 @@ content-WASM request and forbids runtime `.meco` or `.mecob` requests.
 - missing IDs, arguments, locale bundles, and fallback bundles fail as configured;
 - actual fallback locale is observable;
 - English and at least one locale with `few`/`many` exercise all categories;
+- the real `fluent-bundle` integration receives typed text, number, and enum
+  arguments and exercises gender plus `one`/`few`/`many`/`other` selection;
+- the Fluent proof keeps default bidi isolation enabled and observes formatter
+  environment provenance;
 - formatter resource and schema drift fails CI.
 
 A future production localization adapter extends this generic boundary suite with
 adapter-owned fixtures for bidi isolation, formatter-backed rendered-novelty
 namespaces, resource/environment changes, and non-replayable responses. The
-generic test formatter does not claim the typography, caching, or security policy
-of that deferred adapter.
+generic catalog formatter and the test-only Fluent proof do not claim the
+caching, packaging, full value-model, or security policy of that deferred adapter.
 
 ### Committed benchmarks
 

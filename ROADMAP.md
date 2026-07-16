@@ -186,6 +186,9 @@ Add localization without embedding a localization system in the core.
   in the WASM wrapper.
 - [x] Add at least English and one locale with `few`/`many` categories to the
   integration corpus.
+- [x] Prove the generic Rust boundary against real Fluent `.ftl` resources using
+  `fluent-bundle` only as a dev dependency, including typed arguments, gender,
+  plural categories, fallback, provenance, and bidi isolation.
 
 **Exit gate:** internally generated values feed a localized complete message in
 Rust, Deno, and browser tests; missing messages and schema drift produce stable
