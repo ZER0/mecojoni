@@ -7,7 +7,8 @@ use mecojoni_core::{
     LocaleRequest, LocationProfile, MecoError, MecoResult, MessageArgument, MessageDefinition,
     MessageManifest, PackageInput, PackageSource, Rational, RepetitionStore, ResolvedImport,
     ResourceProfile, SamplerSession, SchemaType, Severity, SourceFile, SourceId, SplitMix64, Value,
-    ValueSyntax, WeightSyntax, audit_composition, compile_package, compile_package_with_manifest,
+    ValueSyntax, WeightSyntax, audit_composition, audit_rendered_repetition,
+    audit_structural_repetition, compile_package, compile_package_with_manifest,
     diversity_factor_16_16, location_cooldown_multiplier, parse_front_matter, parse_module,
     validate_package_input,
 };
@@ -386,6 +387,7 @@ fn loads_every_module_in_a_real_package_from_the_filesystem() {
             data: &[],
             trace_bindings: false,
             trace_selections: false,
+            trace_provenance: false,
         })
         .expect("filesystem package generates");
     assert_eq!(result.text(), "Hello, world!");
@@ -454,6 +456,7 @@ fn weighted_package_matches_the_seeded_filesystem_corpus() {
                 data: &[],
                 trace_bindings: false,
                 trace_selections: false,
+                trace_provenance: false,
             })
             .expect("explicit entry generates")
     };
@@ -513,6 +516,7 @@ fn deep_filesystem_grammar_uses_the_heap_stack_and_exact_limits() {
             data: &[],
             trace_bindings: false,
             trace_selections: false,
+            trace_provenance: false,
         })
         .expect("looser named test limits permit the whole chain");
     assert_eq!(result.text(), "finished");
@@ -658,7 +662,7 @@ fn named_profiles_match_the_checked_in_contract() {
     let composition = CompositionProfile::V1;
     let actual = format!(
         concat!(
-            "location/1 candidates={} gap={} horizon={} cooldown={}/{} edges={}..{} internal={} edge_window={} exact_window={}\n",
+            "location/1 candidates={} gap={} horizon={} cooldown={}/{} edges={}..{} internal={} edge_window={} exact_window={} edge_bytes={} exact_bytes={}\n",
             "interactive/1 weighted candidates={} depth={} expansions={} scalars={} sampler={} aggregate_expansions={} aggregate_sampler={} rendered_scalars={} rendered_bytes={} formatter={}\n",
             "interactive/1 diverse candidates={} depth={} expansions={} scalars={} sampler={} aggregate_expansions={} aggregate_sampler={} rendered_scalars={} rendered_bytes={} formatter={}\n",
             "composition/1 references={} literal_words={} messages_exempt={}\n",
@@ -674,6 +678,8 @@ fn named_profiles_match_the_checked_in_contract() {
         location.internal_boundary_words,
         location.edge_history_window,
         location.exact_history_window,
+        location.edge_history_logical_bytes,
+        location.exact_history_logical_bytes,
         weighted.candidate_attempts,
         weighted.maximum_depth_per_candidate,
         weighted.maximum_expansions_per_candidate,
@@ -1293,4 +1299,88 @@ fn assert_milestone7_exempt_rules_generate(grammar: &CompiledGrammar) {
                 .expect("nullable/recursive exemption remains generatable");
         }
     }
+}
+
+#[test]
+fn milestone8_provenance_audits_and_nonempty_replay_round_trip_from_filesystem() {
+    let package = single_file_package("packages/milestone8/root.meco.md");
+    let manifest = MessageManifest {
+        messages: vec![MessageDefinition {
+            id: "arrival".to_string(),
+            arguments: vec![MessageArgument {
+                name: "name".to_string(),
+                type_: SchemaType::Text,
+            }],
+        }],
+    };
+    let grammar =
+        compile_package_with_manifest(&package, &manifest).expect("Milestone 8 package compiles");
+    let expected = fs::read_to_string(fixture_path("expected/milestone8-audit-v1.findings"))
+        .expect("read Milestone 8 audit findings");
+    let actual = grammar
+        .audit_composition()
+        .into_iter()
+        .map(|finding| {
+            format!(
+                "{}|{}|{}|{}|{}|{}",
+                finding.rule,
+                finding.production_id,
+                finding.direct_references,
+                finding.longest_literal_run,
+                finding.insufficient_references,
+                finding.excessive_literal_run
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(actual, expected.trim());
+
+    let data = [DataBinding::new(
+        "playerName".to_string(),
+        Value::Text("Rin".to_string()),
+    )];
+    let request = DiverseGenerationRequest {
+        data: &data,
+        trace_selections: true,
+        trace_provenance: true,
+        ..DiverseGenerationRequest::default()
+    };
+    let mut session = SamplerSession::new(19);
+    let mut store = RepetitionStore::new_location();
+    let first = session
+        .generate(&grammar, &mut store, &request)
+        .expect("first traced generation");
+    let session_snapshot = session.snapshot();
+    let repetition_snapshot = store.snapshot().expect("nonempty history snapshot");
+    let second = session
+        .generate(&grammar, &mut store, &request)
+        .expect("second traced generation");
+
+    let corpus = vec![first.generation().clone(), second.generation().clone()];
+    let repeated = audit_rendered_repetition(&corpus, 3);
+    let opening = repeated
+        .iter()
+        .find(|finding| finding.fragment == "fixed opening words")
+        .expect("repeated opening is audited");
+    assert_eq!(opening.occurrences, 2);
+    assert!(
+        opening
+            .attributions
+            .iter()
+            .all(|attribution| attribution.rule != "audit.suffix")
+    );
+    assert!(audit_structural_repetition(&corpus).iter().any(|finding| {
+        finding.rule == "audit.opening" && finding.production_id == "fixed-opening"
+    }));
+
+    let mut restored_session =
+        SamplerSession::restore(session_snapshot).expect("session snapshot restores");
+    let mut restored_store =
+        RepetitionStore::restore(&repetition_snapshot).expect("history snapshot restores");
+    let replayed = restored_session
+        .generate(&grammar, &mut restored_store, &request)
+        .expect("restored next call succeeds");
+    assert_eq!(replayed, second);
+    assert_eq!(restored_session, session);
+    assert_eq!(restored_store, store);
 }

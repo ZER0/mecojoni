@@ -24,6 +24,12 @@ impl SplitMix64 {
         }
     }
 
+    /// Restores an exact version-1 stream cursor from a validated snapshot.
+    #[must_use]
+    pub const fn from_state(state: u64, words: u64) -> Self {
+        Self { state, words }
+    }
+
     #[must_use]
     pub const fn state(self) -> u64 {
         self.state

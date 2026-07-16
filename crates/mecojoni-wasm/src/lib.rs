@@ -13,9 +13,9 @@ use core::cell::RefCell;
 use mecojoni_core::{
     CompiledGrammar, DataBinding, Diagnostic, DiverseGenerationRequest, GeneratedContent,
     GenerationLimits, GenerationRequest, LocaleRequest, MecoError, MecoResult, MessageArgument,
-    MessageDefinition, MessageManifest, PackageInput, PackageSource, Rational, RepetitionStore,
-    ResolvedImport, SamplerSession, SchemaType, Severity, SourceFile, SourceId, Value,
-    compile_package, compile_package_with_manifest,
+    MessageDefinition, MessageManifest, PackageInput, PackageSource, Rational, RepetitionSnapshot,
+    RepetitionStore, ResolvedImport, SamplerSession, SchemaType, SessionSnapshot, Severity,
+    SourceFile, SourceId, Value, compile_package, compile_package_with_manifest,
 };
 
 mod wire;
@@ -37,6 +37,10 @@ pub const OP_GENERATE_STRUCTURAL: u32 = 6;
 pub const OP_REPETITION_CREATE: u32 = 7;
 pub const OP_SESSION_CREATE: u32 = 8;
 pub const OP_GENERATE_DIVERSE: u32 = 9;
+pub const OP_SESSION_SNAPSHOT_EXPORT: u32 = 10;
+pub const OP_SESSION_SNAPSHOT_IMPORT: u32 = 11;
+pub const OP_REPETITION_SNAPSHOT_EXPORT: u32 = 12;
+pub const OP_REPETITION_SNAPSHOT_IMPORT: u32 = 13;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_ERROR: u32 = 1;
@@ -48,12 +52,14 @@ const PAYLOAD_COMPILE: u32 = 2;
 const PAYLOAD_GENERATE: u32 = 3;
 const PAYLOAD_STRUCTURAL: u32 = 4;
 const PAYLOAD_DIVERSE: u32 = 5;
+const PAYLOAD_SNAPSHOT: u32 = 6;
 
 const MAX_MODULES: usize = 4_096;
 const MAX_IMPORTS_PER_MODULE: usize = 4_096;
 const MAX_STRING_BYTES: usize = 1_048_576;
 const MAX_SOURCE_BYTES: usize = 16_777_216;
 const MAX_REQUEST_VALUES: usize = 4_096;
+const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Returns the ABI version before any allocation or handle operation is attempted.
 #[allow(unsafe_code)]
@@ -256,6 +262,10 @@ fn dispatch(state: &mut State, operation: u32, input: &[u8]) -> u32 {
         OP_REPETITION_CREATE => repetition_create(state, input),
         OP_SESSION_CREATE => session_create(state, input),
         OP_GENERATE_DIVERSE => generate_diverse(state, input),
+        OP_SESSION_SNAPSHOT_EXPORT => session_snapshot_export(state, input),
+        OP_SESSION_SNAPSHOT_IMPORT => session_snapshot_import(state, input),
+        OP_REPETITION_SNAPSHOT_EXPORT => repetition_snapshot_export(state, input),
+        OP_REPETITION_SNAPSHOT_IMPORT => repetition_snapshot_import(state, input),
         _ => state.add_error(AbiDiagnostic::new(
             "E_ABI_OPERATION",
             format!("unknown ABI operation {operation}"),
@@ -336,6 +346,7 @@ fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
                 data: &request.data,
                 trace_bindings: request.trace_bindings,
                 trace_selections: request.trace_selections,
+                trace_provenance: request.trace_provenance,
             })
         }
         Some(value) => {
@@ -372,6 +383,7 @@ fn generate_structural(state: &mut State, input: &[u8]) -> u32 {
                 data: &request.data,
                 trace_bindings: request.trace_bindings,
                 trace_selections: request.trace_selections,
+                trace_provenance: request.trace_provenance,
             },
             Some(LocaleRequest {
                 requested: request
@@ -435,6 +447,112 @@ fn session_create(state: &mut State, input: &[u8]) -> u32 {
         HandleValue::Session(RefCell::new(SamplerSession::new(seed))),
         encode_empty_success(PAYLOAD_PACKAGE),
     )
+}
+
+fn session_snapshot_export(state: &mut State, input: &[u8]) -> u32 {
+    let handle = match decode_handle_request(input) {
+        Ok(handle) => handle,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let result = match state.get(handle) {
+        Some(HandleValue::Session(session)) => session
+            .try_borrow()
+            .map(|session| session.snapshot().to_bytes())
+            .map_err(|_| {
+                AbiDiagnostic::new(
+                    "E_STATE_BUSY",
+                    "sampler session already has an active operation",
+                )
+            }),
+        Some(value) => Err(wrong_kind(handle, HandleKind::Session, value.kind())),
+        None => Err(stale_handle(handle)),
+    };
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(error) => return state.add_error(error),
+    };
+    state.add_result(ResultRecord {
+        status: STATUS_SUCCESS,
+        value_handle: 0,
+        value_claimed: false,
+        payload: encode_snapshot_success(&bytes),
+    })
+}
+
+fn session_snapshot_import(state: &mut State, input: &[u8]) -> u32 {
+    let bytes = match decode_snapshot_bytes(input) {
+        Ok(bytes) => bytes,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let snapshot = match SessionSnapshot::from_bytes(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return add_core_error(state, &error),
+    };
+    let session = match SamplerSession::restore(snapshot) {
+        Ok(session) => session,
+        Err(error) => return add_core_error(state, &error),
+    };
+    state.add_value_result(
+        HandleValue::Session(RefCell::new(session)),
+        encode_snapshot_success(&bytes),
+    )
+}
+
+fn repetition_snapshot_export(state: &mut State, input: &[u8]) -> u32 {
+    let handle = match decode_handle_request(input) {
+        Ok(handle) => handle,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let result = match state.get(handle) {
+        Some(HandleValue::Repetition(store)) => match store.try_borrow() {
+            Ok(store) => store.snapshot().map(|snapshot| snapshot.to_bytes()),
+            Err(_) => Err(MecoError::new(Diagnostic::new(
+                mecojoni_core::DiagnosticCode::STATE_BUSY,
+                Severity::Error,
+                None,
+                "repetition store already has an active operation",
+            ))),
+        },
+        Some(value) => {
+            return state.add_error(wrong_kind(handle, HandleKind::Repetition, value.kind()));
+        }
+        None => return state.add_error(stale_handle(handle)),
+    };
+    match result {
+        Ok(bytes) => state.add_result(ResultRecord {
+            status: STATUS_SUCCESS,
+            value_handle: 0,
+            value_claimed: false,
+            payload: encode_snapshot_success(&bytes),
+        }),
+        Err(error) => add_core_error(state, &error),
+    }
+}
+
+fn repetition_snapshot_import(state: &mut State, input: &[u8]) -> u32 {
+    let bytes = match decode_snapshot_bytes(input) {
+        Ok(bytes) => bytes,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let snapshot = match RepetitionSnapshot::from_bytes(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return add_core_error(state, &error),
+    };
+    let store = match RepetitionStore::restore(&snapshot) {
+        Ok(store) => store,
+        Err(error) => return add_core_error(state, &error),
+    };
+    state.add_value_result(
+        HandleValue::Repetition(RefCell::new(store)),
+        encode_snapshot_success(&bytes),
+    )
+}
+
+fn decode_snapshot_bytes(input: &[u8]) -> Result<Vec<u8>, AbiDiagnostic> {
+    let mut decoder = decoder(input)?;
+    let bytes = decoder.bytes(MAX_SNAPSHOT_BYTES).map_err(wire_diagnostic)?;
+    decoder.finish().map_err(wire_diagnostic)?;
+    Ok(bytes)
 }
 
 fn generate_diverse(state: &mut State, input: &[u8]) -> u32 {
@@ -504,6 +622,7 @@ fn generate_diverse(state: &mut State, input: &[u8]) -> u32 {
                     data: &request.data,
                     trace_bindings: request.trace_bindings,
                     trace_selections: request.trace_selections,
+                    trace_provenance: request.trace_provenance,
                     cancelled: request.cancelled,
                 },
             )
@@ -520,6 +639,7 @@ fn generate_diverse(state: &mut State, input: &[u8]) -> u32 {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct AbiGenerationRequest {
     grammar: u32,
     seed: u64,
@@ -528,6 +648,7 @@ struct AbiGenerationRequest {
     data: Vec<DataBinding>,
     trace_bindings: bool,
     trace_selections: bool,
+    trace_provenance: bool,
     requested_locale: Option<String>,
     fallback_locales: Vec<String>,
     session: Option<u32>,
@@ -574,7 +695,7 @@ fn decode_generation_request(
         max_output_bytes: decoder.u32().map_err(wire_diagnostic)?,
         max_sampler_words: decoder.u32().map_err(wire_diagnostic)?,
     };
-    let (trace_bindings, trace_selections, data) = if typed {
+    let (trace_bindings, trace_selections, trace_provenance, data) = if typed {
         let trace_bindings = match decoder.u8().map_err(wire_diagnostic)? {
             0 => false,
             1 => true,
@@ -595,6 +716,16 @@ fn decode_generation_request(
                 ));
             }
         };
+        let trace_provenance = match decoder.u8().map_err(wire_diagnostic)? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(AbiDiagnostic::new(
+                    "E_ABI_WIRE_VALUE",
+                    "provenance trace flag must be 0 or 1",
+                ));
+            }
+        };
         let value_count = count(&mut decoder, MAX_REQUEST_VALUES, "request value")?;
         let mut data = Vec::with_capacity(value_count);
         for _ in 0..value_count {
@@ -602,9 +733,9 @@ fn decode_generation_request(
             let value = decode_value(&mut decoder)?;
             data.push(DataBinding::new(name, value));
         }
-        (trace_bindings, trace_selections, data)
+        (trace_bindings, trace_selections, trace_provenance, data)
     } else {
-        (false, false, Vec::new())
+        (false, false, false, Vec::new())
     };
     let (requested_locale, fallback_locales) = if localized {
         let requested = decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?;
@@ -651,6 +782,7 @@ fn decode_generation_request(
         data,
         trace_bindings,
         trace_selections,
+        trace_provenance,
         requested_locale,
         fallback_locales,
         session,
@@ -843,6 +975,12 @@ fn encode_empty_success(kind: u32) -> Vec<u8> {
     encoder.into_bytes()
 }
 
+fn encode_snapshot_success(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = payload(PAYLOAD_SNAPSHOT);
+    encoder.bytes(bytes);
+    encoder.into_bytes()
+}
+
 fn encode_compile_success(grammar: &CompiledGrammar) -> Vec<u8> {
     let mut encoder = payload(PAYLOAD_COMPILE);
     encoder.u32(u32::try_from(grammar.entries().len()).unwrap_or(u32::MAX));
@@ -867,7 +1005,12 @@ fn encode_generation_success(result: &mecojoni_core::GenerationResult, typed: bo
     encoder.u32(result.expansions());
     encoder.u32(result.sampler_words());
     if typed {
-        encode_traces(&mut encoder, result.bindings(), result.selections());
+        encode_traces(
+            &mut encoder,
+            result.bindings(),
+            result.selections(),
+            result.provenance(),
+        );
     }
     encoder.into_bytes()
 }
@@ -897,7 +1040,12 @@ fn encode_structural_success(result: &mecojoni_core::StructuralGenerationResult)
     encoder.string(result.entry());
     encoder.u32(result.expansions());
     encoder.u32(result.sampler_words());
-    encode_traces(&mut encoder, result.bindings(), result.selections());
+    encode_traces(
+        &mut encoder,
+        result.bindings(),
+        result.selections(),
+        result.provenance(),
+    );
     encoder.into_bytes()
 }
 
@@ -908,12 +1056,18 @@ fn encode_diverse_success(result: &mecojoni_core::DiverseResult) -> Vec<u8> {
     encoder.string(generation.entry());
     encoder.u32(generation.expansions());
     encoder.u32(generation.sampler_words());
-    encode_traces(&mut encoder, generation.bindings(), generation.selections());
+    encode_traces(
+        &mut encoder,
+        generation.bindings(),
+        generation.selections(),
+        generation.provenance(),
+    );
     encoder.u32(result.attempts());
     encoder.u32(result.winner_attempt());
     encoder.u32(result.exact_repetitions());
     encoder.u64(result.edge_repetitions());
     encoder.u64(result.committed_revision());
+    encode_replay_receipt(&mut encoder, result.receipt());
     encoder.into_bytes()
 }
 
@@ -921,6 +1075,7 @@ fn encode_traces(
     encoder: &mut Encoder,
     bindings: &[mecojoni_core::BindingTrace],
     selections: &[mecojoni_core::SelectionTrace],
+    provenance: &[mecojoni_core::ProvenanceNode],
 ) {
     encoder.u32(u32::try_from(bindings.len()).unwrap_or(u32::MAX));
     for binding in bindings {
@@ -932,9 +1087,11 @@ fn encode_traces(
     for selection in selections {
         encoder.string(selection.rule());
         encoder.u32(selection.selected_production());
+        encoder.string(selection.selected_production_id());
         encoder.u32(u32::try_from(selection.eligible().len()).unwrap_or(u32::MAX));
         for weight in selection.eligible() {
             encoder.u32(weight.production());
+            encoder.string(weight.production_id());
             encoder.u64(u64::from_le_bytes(
                 weight.base_weight().numerator().to_le_bytes(),
             ));
@@ -942,6 +1099,76 @@ fn encode_traces(
             encoder.u64(weight.normalized_weight());
         }
     }
+    encoder.u32(u32::try_from(provenance.len()).unwrap_or(u32::MAX));
+    for node in provenance {
+        encoder.u32(node.id());
+        match node.parent() {
+            Some(parent) => {
+                encoder.u8(1);
+                encoder.u32(parent);
+            }
+            None => encoder.u8(0),
+        }
+        encoder.u8(match node.kind() {
+            mecojoni_core::ProvenanceKind::Production => 0,
+            mecojoni_core::ProvenanceKind::AuthoredText => 1,
+            mecojoni_core::ProvenanceKind::HostValue => 2,
+            mecojoni_core::ProvenanceKind::BoundValue => 3,
+            mecojoni_core::ProvenanceKind::EmittingCapture => 4,
+            mecojoni_core::ProvenanceKind::Binding => 5,
+            mecojoni_core::ProvenanceKind::Message => 6,
+        });
+        encoder.string(node.rule());
+        encoder.string(node.production_id());
+        encode_span(encoder, node.source_span());
+        match node.output() {
+            Some(range) => {
+                encoder.u8(1);
+                encoder.u64(range.start_byte());
+                encoder.u64(range.end_byte());
+                encoder.u64(range.start_scalar());
+                encoder.u64(range.end_scalar());
+            }
+            None => encoder.u8(0),
+        }
+        encoder.u32(node.depth());
+        match node.name() {
+            Some(name) => {
+                encoder.u8(1);
+                encoder.string(name);
+            }
+            None => encoder.u8(0),
+        }
+    }
+}
+
+fn encode_replay_receipt(encoder: &mut Encoder, receipt: &mecojoni_core::ReplayReceipt) {
+    encoder.u32(receipt.version());
+    encoder.u64(receipt.grammar_hash());
+    encoder.string(receipt.sampler_version());
+    encoder.string(receipt.normalizer_version());
+    encoder.string(receipt.tokenizer_version());
+    encoder.u64(receipt.pre_session_hash());
+    encoder.u64(receipt.pre_session_words());
+    encoder.u64(receipt.pre_repetition_hash());
+    encoder.u64(receipt.pre_repetition_revision());
+    encoder.u64(receipt.reserved_words());
+    encoder.u64(receipt.request_digest());
+    encoder.string(receipt.effective_entry());
+    encoder.u32(receipt.winner_attempt());
+    encoder.u64(receipt.derivation_hash());
+    encoder.u64(receipt.final_text_hash());
+    encoder.u64(receipt.post_session_hash());
+    encoder.u64(receipt.post_repetition_hash());
+    encoder.u64(receipt.post_repetition_revision());
+}
+
+fn encode_span(encoder: &mut Encoder, span: mecojoni_core::Span) {
+    encoder.u32(span.source().get());
+    encoder.u64(span.start().byte());
+    encoder.u64(span.start().scalar());
+    encoder.u64(span.end().byte());
+    encoder.u64(span.end().scalar());
 }
 
 fn encode_value(encoder: &mut Encoder, value: &Value) {
@@ -1184,11 +1411,13 @@ mod tests {
     use alloc::{string::ToString, vec};
 
     use super::{
-        ABI_VERSION, HandleKind, HandleValue, OP_COMPILE, OP_COMPILE_WITH_MANIFEST,
-        OP_GENERATE_DIVERSE, OP_GENERATE_STRUCTURAL, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE,
-        OP_REPETITION_CREATE, OP_SESSION_CREATE, PAYLOAD_DIVERSE, PAYLOAD_ERROR, PAYLOAD_GENERATE,
-        PAYLOAD_STRUCTURAL, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION, dispatch,
-        meco_abi_version, meco_core_api_version,
+        ABI_VERSION, HandleKind, HandleValue, MAX_SNAPSHOT_BYTES, OP_COMPILE,
+        OP_COMPILE_WITH_MANIFEST, OP_GENERATE_DIVERSE, OP_GENERATE_STRUCTURAL,
+        OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE, OP_REPETITION_CREATE,
+        OP_REPETITION_SNAPSHOT_EXPORT, OP_REPETITION_SNAPSHOT_IMPORT, OP_SESSION_CREATE,
+        OP_SESSION_SNAPSHOT_EXPORT, OP_SESSION_SNAPSHOT_IMPORT, PAYLOAD_DIVERSE, PAYLOAD_ERROR,
+        PAYLOAD_GENERATE, PAYLOAD_SNAPSHOT, PAYLOAD_STRUCTURAL, STATUS_ERROR, STATUS_SUCCESS,
+        State, WIRE_VERSION, dispatch, meco_abi_version, meco_core_api_version,
     };
     use crate::wire::{Decoder, Encoder};
 
@@ -1261,6 +1490,7 @@ mod tests {
         encoder.u32(8_192);
         encoder.u8(0);
         encoder.u8(0);
+        encoder.u8(0);
         encoder.u32(1);
         encoder.string("itemCount");
         encoder.u8(1);
@@ -1282,6 +1512,7 @@ mod tests {
         encoder.u32(16_384);
         encoder.u32(65_536);
         encoder.u32(8_192);
+        encoder.u8(0);
         encoder.u8(0);
         encoder.u8(0);
         encoder.u32(0);
@@ -1439,6 +1670,61 @@ mod tests {
         assert_eq!(decoder.u32(), Ok(WIRE_VERSION));
         assert_eq!(decoder.u32(), Ok(PAYLOAD_DIVERSE));
         assert_eq!(decoder.string(64), Ok("hello".to_string()));
+
+        let session_export = dispatch(
+            &mut state,
+            OP_SESSION_SNAPSHOT_EXPORT,
+            &handle_request(session),
+        );
+        let repetition_export = dispatch(
+            &mut state,
+            OP_REPETITION_SNAPSHOT_EXPORT,
+            &handle_request(repetition),
+        );
+        let snapshot_bytes = |state: &State, result: u32| {
+            let mut decoder = Decoder::new(&state.result(result).expect("snapshot result").payload);
+            assert_eq!(decoder.u32(), Ok(WIRE_VERSION));
+            assert_eq!(decoder.u32(), Ok(PAYLOAD_SNAPSHOT));
+            decoder.bytes(MAX_SNAPSHOT_BYTES).expect("snapshot bytes")
+        };
+        let session_bytes = snapshot_bytes(&state, session_export);
+        let repetition_bytes = snapshot_bytes(&state, repetition_export);
+        let import_request = |bytes: &[u8]| {
+            let mut encoder = Encoder::new();
+            encoder.u32(WIRE_VERSION);
+            encoder.bytes(bytes);
+            encoder.into_bytes()
+        };
+        let restored_session_result = dispatch(
+            &mut state,
+            OP_SESSION_SNAPSHOT_IMPORT,
+            &import_request(&session_bytes),
+        );
+        let restored_session = state
+            .claim_result_value(restored_session_result)
+            .expect("restored session");
+        let restored_repetition_result = dispatch(
+            &mut state,
+            OP_REPETITION_SNAPSHOT_IMPORT,
+            &import_request(&repetition_bytes),
+        );
+        let restored_repetition = state
+            .claim_result_value(restored_repetition_result)
+            .expect("restored repetition");
+        let original_next = dispatch(
+            &mut state,
+            OP_GENERATE_DIVERSE,
+            &diverse_request(grammar, session, repetition),
+        );
+        let restored_next = dispatch(
+            &mut state,
+            OP_GENERATE_DIVERSE,
+            &diverse_request(grammar, restored_session, restored_repetition),
+        );
+        assert_eq!(
+            state.result(original_next).expect("original next").payload,
+            state.result(restored_next).expect("restored next").payload
+        );
     }
 
     #[test]

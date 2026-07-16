@@ -23,6 +23,7 @@ impl DiagnosticCode {
     pub const RULE_SYNTAX: Self = Self("E_RULE_SYNTAX");
     pub const DUPLICATE_RULE: Self = Self("E_DUPLICATE_RULE");
     pub const PRODUCTION_SYNTAX: Self = Self("E_PRODUCTION_SYNTAX");
+    pub const PRODUCTION_ID: Self = Self("E_PRODUCTION_ID");
     pub const WEIGHT_SYNTAX: Self = Self("E_WEIGHT_SYNTAX");
     pub const CLAUSE_ORDER: Self = Self("E_CLAUSE_ORDER");
     pub const GUARD_SYNTAX: Self = Self("E_GUARD_SYNTAX");
@@ -59,6 +60,9 @@ impl DiagnosticCode {
     pub const FORMATTER_LIMIT: Self = Self("E_FORMATTER_LIMIT");
     pub const STATE_BUSY: Self = Self("E_STATE_BUSY");
     pub const CANCELLED: Self = Self("E_CANCELLED");
+    pub const SNAPSHOT: Self = Self("E_SNAPSHOT");
+    pub const SNAPSHOT_LIMIT: Self = Self("E_SNAPSHOT_LIMIT");
+    pub const SNAPSHOT_EXPIRED: Self = Self("E_SNAPSHOT_EXPIRED");
     pub const NO_ELIGIBLE_PRODUCTION: Self = Self("E_NO_ELIGIBLE_PRODUCTION");
     pub const WEIGHT_VALUE: Self = Self("E_WEIGHT_VALUE");
     pub const UNSUPPORTED_FEATURE: Self = Self("E_UNSUPPORTED_FEATURE");

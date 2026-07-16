@@ -9,6 +9,8 @@ Generation data uses explicit discriminated `MecoValue` objects. Exact numbers c
 numerator/denominator fields; finite enums carry their member string and are checked against the
 compiled schema. `traceBindings: true` returns ordered silent/emitting binding records;
 `traceSelections: true` returns exact rational and normalized weights for replay inspection.
+`traceProvenance: true` additionally returns stable production IDs, exact source spans, parent
+links, and optional UTF-8 byte/Unicode-scalar output ranges. Silent bindings have no output range.
 
 Complete messages are compiled against an explicit typed manifest and resolved by a synchronous
 callback over resources the application has already loaded:
@@ -60,6 +62,21 @@ const result = meco.generateDiverse(grammar.value, session.value, repetition.val
 Dispose the grammar, session, and repetition store in `finally`. A successful `generateDiverse`
 reserves the versioned 12-attempt parent stream and reports the winner, exact/edge repeat score, and
 committed store revision. Failed requests do not advance either state handle.
+
+State can be saved after nonempty history and restored without changing the next result:
+
+```ts
+const sessionBytes = session.value.snapshot();
+const repetitionBytes = repetition.value.snapshot();
+if (!sessionBytes.ok || !repetitionBytes.ok) throw new Error("snapshot failed");
+
+const restoredSession = meco.restoreSessionSnapshot(sessionBytes.value);
+const restoredRepetition = meco.restoreRepetitionSnapshot(repetitionBytes.value);
+```
+
+Snapshots may contain player text; the host is responsible for access control and encryption at
+rest. `DiverseOutput.receipt` is a verification record of grammar, request, state, derivation, and
+final-text hashes; it does not by itself contain enough data to recreate request values.
 
 Build and run the normative Deno integration suite from the repository root:
 

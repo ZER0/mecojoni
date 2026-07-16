@@ -171,6 +171,10 @@ are rejected, and trailing bytes are errors.
 | repetition store create | 7 | no fields | `location/1` repetition-store handle |
 | sampler session create | 8 | `u64` seed | `diverse/1` sampler-session handle |
 | diverse generate | 9 | operation-4 fields with reserved seed zero, followed by session/repetition handles and cancellation flag | text/traces plus attempts, winner score, and committed revision |
+| session snapshot export | 10 | session handle | `snapshot/1` bytes |
+| session snapshot import | 11 | bounded `snapshot/1` bytes | restored session handle plus canonical bytes |
+| repetition snapshot export | 12 | repetition-store handle | `snapshot/1` bytes |
+| repetition snapshot import | 13 | bounded `snapshot/1` bytes | restored repetition-store handle plus canonical bytes |
 
 Generation limits are depth, expansions, output Unicode scalars, output UTF-8
 bytes, and sampler words in that order. A `u64` is always little-endian and the
@@ -254,6 +258,17 @@ Operation 9 rejects wrong, stale, or already borrowed state handles, reserves th
 fixed candidate substreams, and returns only after winner-only commit. The
 TypeScript `generateDiverse` options intentionally contain no seed; the reserved
 wire field is zero in ABI 1 and the session is the sole random source.
+
+Typed generation requests carry binding, selection, and provenance trace flags in
+that order. Selection records include stable production IDs as well as artifact-
+local indexes. Provenance nodes encode parent, kind, qualified rule, stable
+production ID, source span, optional byte/scalar output range, depth, and optional
+binding/capture/message name. Diverse results append their versioned replay receipt.
+
+Snapshot operations never expose mutable snapshot handles. Export returns owned
+bytes; import validates version, kind magic, UTF-8, collection windows, logical-
+byte declarations, and trailing-byte absence before creating a new opaque state
+handle. TypeScript `snapshot()` and restore helpers use the same operations.
 
 ## CLI streams and statuses (`cli/1`)
 

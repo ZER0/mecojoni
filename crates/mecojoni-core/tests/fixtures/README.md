@@ -21,6 +21,10 @@ Milestone 7 adds a real `sampler: diverse/1` package and one checked Rust/Deno/
 Chrome sequence. It fixes candidate reservation, hard-gap behavior, winner score,
 revision counts, rollback, cancellation, nullable/recursive exemptions, and the
 published exact/edge eviction boundaries.
+Milestone 8 adds stable authored/content-addressed production identities, a
+filesystem package with host/bound/message provenance, overlap-only rendered and
+structural audits, the reachable `composition/1` contract, copy-on-write sensitive
+history snapshots, replay receipts, and nonempty Rust/WASM/Deno restore tests.
 
 Tests must read these artifacts through `std::fs`. The production core receives
 owned source modules from the host and never performs filesystem I/O.

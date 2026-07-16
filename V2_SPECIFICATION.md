@@ -4,9 +4,10 @@
 > exists. The portable workspace, complete recovering source parser, immutable
 > package compiler, iterative `weighted/1` generator, deterministic primitives,
 > typed request/guard/binding runtime, complete-message formatter boundary,
-> transactional `diverse/1` sessions and histories, package boundary, handwritten
-> WASM ABI, Deno/browser wrapper, and initial audit are implemented; completion is
-> tracked in `ROADMAP.md`.
+> transactional `diverse/1` sessions and histories, stable provenance, overlap-only
+> audits, replay receipts, copy-on-write snapshots, package boundary, handwritten
+> WASM ABI, and Deno/browser wrapper are implemented; completion is tracked in
+> `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -778,6 +779,8 @@ defaults to `weighted/1`. `location/1` fixes the following values:
 | edge fragments | first/last 3–8 words, plus two-word internal sentence boundaries |
 | edge-history window | 300 returned phrases |
 | exact-history window | 50,000 normalized returned phrases |
+| edge-history logical-byte budget | 4 MiB canonical UTF-8 payload |
+| exact-history logical-byte budget | 16 MiB canonical UTF-8 payload |
 
 `descendants` is the compiler's bounded structural-diversity estimate for the
 production, with a minimum of one. `floor_log2` and `isqrt` are exact unsigned
@@ -1251,12 +1254,23 @@ together.
 
 Snapshots are immutable copy-on-write revision roots/deltas, not deep copies of
 every history. An ordinary receipt does not pin its referenced revision and must
-be resolved through the store; resolution reports `stateAvailable: false` after
-the versioned retained-snapshot count or logical-byte budget evicts that revision.
-`captureReplay: true` atomically pins the pre-call root or writes a durable bundle
-before releasing the transaction lease; callers must explicitly release pinned
-snapshots. Snapshot retention has its own metrics and cannot borrow unbounded space
-from live novelty history.
+be resolved through a caller-owned snapshot registry; host resolution reports
+`stateAvailable: false` after its retained-snapshot count or logical-byte budget
+evicts that revision. A caller requesting a replay capture atomically retains the
+pre-call root or writes a durable bundle before releasing the transaction lease;
+callers must explicitly release pinned snapshots. Snapshot retention has its own
+metrics and cannot borrow unbounded space from live novelty history.
+
+The first executable `snapshot/1` representation uses caller ownership for
+retention. An in-memory `RepetitionSnapshot` shares an `alloc::rc::Rc` root with
+the single-writer live store; the next commit copies only when that root is shared.
+`Rc` avoids requiring pointer-width atomics on small `no_std` targets. `pinned` is
+explicit durable-retention intent and the caller releases the pin by dropping or
+disposing the snapshot. Expiry is measured in observed store revisions, never wall
+time. Restorable capture requires explicit sensitive-history consent, serialized
+decoding is capped at 64 MiB, and exact/edge profile windows plus their logical-byte
+budgets are revalidated before restore. Hosts own durable encryption and access
+control; the portable core performs no I/O and keeps no ambient snapshot registry.
 
 ### CLI and editor workflow
 

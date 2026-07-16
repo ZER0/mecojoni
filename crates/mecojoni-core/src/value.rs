@@ -47,9 +47,10 @@ pub struct BindingTrace {
 }
 
 /// One exact eligible production weight retained for replay inspection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EligibleWeightTrace {
     production: u32,
+    production_id: String,
     base_weight: Rational,
     normalized_weight: u64,
 }
@@ -57,11 +58,13 @@ pub struct EligibleWeightTrace {
 impl EligibleWeightTrace {
     pub(crate) const fn new(
         production: u32,
+        production_id: String,
         base_weight: Rational,
         normalized_weight: u64,
     ) -> Self {
         Self {
             production,
+            production_id,
             base_weight,
             normalized_weight,
         }
@@ -70,6 +73,11 @@ impl EligibleWeightTrace {
     #[must_use]
     pub const fn production(&self) -> u32 {
         self.production
+    }
+
+    #[must_use]
+    pub fn production_id(&self) -> &str {
+        &self.production_id
     }
 
     #[must_use]
@@ -88,6 +96,7 @@ impl EligibleWeightTrace {
 pub struct SelectionTrace {
     rule: String,
     selected_production: u32,
+    selected_production_id: String,
     eligible: alloc::vec::Vec<EligibleWeightTrace>,
 }
 
@@ -95,11 +104,13 @@ impl SelectionTrace {
     pub(crate) const fn new(
         rule: String,
         selected_production: u32,
+        selected_production_id: String,
         eligible: alloc::vec::Vec<EligibleWeightTrace>,
     ) -> Self {
         Self {
             rule,
             selected_production,
+            selected_production_id,
             eligible,
         }
     }
@@ -112,6 +123,11 @@ impl SelectionTrace {
     #[must_use]
     pub const fn selected_production(&self) -> u32 {
         self.selected_production
+    }
+
+    #[must_use]
+    pub fn selected_production_id(&self) -> &str {
+        &self.selected_production_id
     }
 
     #[must_use]

@@ -211,18 +211,18 @@ supported target.
 
 Make generated text explainable and state reproducible.
 
-- [ ] Record stable rule, production, source, binding, message, and output-span
+- [x] Record stable rule, production, source, binding, message, and output-span
   provenance.
-- [ ] Attribute repeated visible fragments only to emitters whose spans overlap
+- [x] Attribute repeated visible fragments only to emitters whose spans overlap
   them.
-- [ ] Expose optional traces and metrics without paying their full cost when off.
-- [ ] Implement structural and rendered repetition audits.
-- [ ] Implement `composition/1` and fixtures for its direct-reference count,
+- [x] Expose optional traces and metrics without paying their full cost when off.
+- [x] Implement structural and rendered repetition audits.
+- [x] Implement `composition/1` and fixtures for its direct-reference count,
   literal-run rule, and complete-message exemption.
-- [ ] Implement versioned session/repetition snapshots and replay receipts.
-- [ ] Define retention, logical-byte budgets, pinning, expiry, and sensitive-data
+- [x] Implement versioned session/repetition snapshots and replay receipts.
+- [x] Define retention, logical-byte budgets, pinning, expiry, and sensitive-data
   handling.
-- [ ] Add round-trip replay tests after nonempty history through Rust and WASM.
+- [x] Add round-trip replay tests after nonempty history through Rust and WASM.
 
 **Exit gate:** awkward output can be traced to its actual visible emitters, audits
 do not blame unrelated deep rules, and snapshot restore reproduces the next output.

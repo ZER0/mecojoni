@@ -17,8 +17,10 @@ and reliable long-running generation.
 > **Status:** v2 is under active implementation. The dependency-free core now
 > parses and compiles complete packages, executes exact typed `weighted/1`
 > generation, and resolves complete localized messages through a synchronous host
-> formatter in Rust, Deno, and Chrome. Stateful `diverse/1`, replay sessions, the
-> CLI, and editor tooling remain roadmap work. The original proof of concept and
+> formatter in Rust, Deno, and Chrome. Transactional `diverse/1`, span-aware
+> provenance, repetition audits, replay receipts, and versioned session/history
+> snapshots now run across Rust and WASM. The CLI and editor tooling remain
+> roadmap work. The original proof of concept and
 > its documentation live in
 > [`v1/`](v1/README.md).
 
@@ -625,9 +627,10 @@ must be recorded for reproducible sessions.
 The initial `diverse/1` profile, `location/1`, uses 12 candidate attempts, an
 immediate-reuse gap of one selection, a four-selection soft cooldown horizon,
 3–8 word edge fragments, 300 retained edge records, and 50,000 retained exact
-records. These are versioned profile values, not hidden tuning constants. The
-default resource profile preserves v1's depth limit of 80 and expansion limit of
-2,000 per candidate while also bounding output, sampling work, and rendered bytes.
+records. The edge and exact histories also have 4 MiB and 16 MiB canonical UTF-8
+logical-byte caps. These are versioned profile values, not hidden tuning constants.
+The default resource profile preserves v1's depth limit of 80 and expansion limit
+of 2,000 per candidate while also bounding output, sampling work, and rendered bytes.
 The complete profile and limit tables are normative in
 [V2_SPECIFICATION.md](V2_SPECIFICATION.md).
 
@@ -648,6 +651,27 @@ let result = session.generate(
 )?;
 ```
 
+Successful diverse results include a `ReplayReceipt` containing grammar and state
+hashes, the request digest, fixed PRNG reservation, stable derivation hash, winner,
+final-text hash, and post-commit revision. `SamplerSession::snapshot()` and
+`RepetitionStore::snapshot()` capture the pre-call continuation; restoring both
+after nonempty history reproduces the next result. In-memory repetition snapshots
+share an immutable copy-on-write root. Serialized snapshots use `snapshot/1`, are
+bounded to 64 MiB at the decoder, and validate their profile windows and logical
+byte declarations before allocating live state.
+
+Repetition snapshots contain resolved lines and fragments and must therefore be
+treated as sensitive data. `SnapshotPolicy` makes capture consent, logical budget,
+pinning, and revision-relative expiry explicit. A pin is ordinary caller ownership:
+dropping the snapshot releases it, so the core never grows an ambient retention
+registry. Durable storage and encryption remain host responsibilities.
+
+Production identities are not list positions. An explicit `id` remains stable
+across weight, order, and prose edits; otherwise the compiler derives a content-
+addressed artifact-local ID from the qualified rule and canonical body, excluding
+weight. Duplicate unlabeled alternatives and all within-rule ID collisions are
+compile errors.
+
 ## Compilation, generation, and diagnostics
 
 The proposed compiler validates source before any generation. Its checks include:
@@ -665,6 +689,11 @@ host language call stack. Failed, losing, cancelled, or over-budget diverse
 candidates roll back their bindings and sampler state. Successful generations can
 return a trace that identifies selected rules, production identities, binding
 events, source locations, sampler adjustments, and formatter/message work.
+With `trace_provenance`, every visible byte/scalar range is linked to authored
+text, host or bound values, emitting captures, or a coarse complete message.
+Non-emitting bindings retain derivation links but no output range. Structural and
+rendered repetition audits operate on these retained traces; rendered findings
+attribute a fragment only to nodes whose output ranges overlap it.
 
 `composition/1` is an optional, deliberately strict audit heuristic. It warns
 when a sentence-ending locally composed production has fewer than three direct
@@ -793,9 +822,11 @@ complete-message effects, explicit locale fallback, formatter provenance, and
 synchronous Rust/JS formatter boundaries are also executable across the shared
 Rust/Deno/Chrome corpus. Transactional `diverse/1` sessions, hard/soft cooldown,
 bounded exact/edge histories, winner-only commit, and cross-target deterministic
-sequences are executable as well. A production Fluent adapter, compound value
-types, replay snapshots, the CLI, and editor tooling remain to be built. Use v1 for
-features outside this v2 subset.
+sequences are executable as well. Stable production IDs, exact output provenance,
+overlap-only structural/rendered audits, copy-on-write snapshots, and replay
+receipts are executable through Rust and the Deno-tested WASM wrapper. A production
+Fluent adapter, compound value types, the CLI, and editor tooling remain to be built.
+Use v1 for features outside this v2 subset.
 
 ## Name
 

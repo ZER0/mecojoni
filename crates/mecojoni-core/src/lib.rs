@@ -15,6 +15,7 @@ mod package;
 mod parser;
 mod prng;
 mod profile;
+mod provenance;
 mod rational;
 mod source;
 mod span;
@@ -26,7 +27,9 @@ pub use ast::{
     RuleSyntax, ValueSyntax, WeightExpression, WeightSyntax,
 };
 pub use audit::{
-    CompositionFinding, WORD_TOKENIZER_VERSION, audit_composition, composition_profile_version,
+    AttributionRole, CompositionFinding, RenderedRepetitionFinding, RepetitionAttribution,
+    StructuralRepetitionFinding, WORD_TOKENIZER_VERSION, audit_composition,
+    audit_rendered_repetition, audit_structural_repetition, composition_profile_version,
 };
 pub use compiler::{
     CompiledGrammar, GeneratedContent, GenerationLimits, GenerationRequest, GenerationResult,
@@ -35,8 +38,9 @@ pub use compiler::{
 };
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use diverse::{
-    DIVERSE_SAMPLER_VERSION, DiverseGenerationRequest, DiverseResult, RepetitionStore,
-    SamplerSession,
+    DIVERSE_SAMPLER_VERSION, DiverseGenerationRequest, DiverseResult, FRAGMENT_TOKENIZER_VERSION,
+    NORMALIZER_VERSION, RepetitionSnapshot, RepetitionStore, ReplayReceipt, SNAPSHOT_VERSION,
+    SamplerSession, SessionSnapshot, SnapshotPolicy,
 };
 pub use error::{MecoError, MecoResult};
 pub use formatter::{
@@ -54,6 +58,7 @@ pub use profile::{
     LOCATION_PROFILE_VERSION, LocationProfile, ResourceProfile, diversity_factor_16_16,
     location_cooldown_multiplier,
 };
+pub use provenance::{OutputRange, ProvenanceKind, ProvenanceNode};
 pub use rational::{RATIONAL_LIMIT, RATIONAL_VERSION, Rational, RationalError};
 pub use source::{SourceError, SourceFile};
 pub use span::{SourceId, SourcePosition, Span, SpanError, Spanned};

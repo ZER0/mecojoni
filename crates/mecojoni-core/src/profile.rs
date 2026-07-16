@@ -19,6 +19,8 @@ pub struct LocationProfile {
     pub internal_boundary_words: u32,
     pub edge_history_window: u32,
     pub exact_history_window: u32,
+    pub edge_history_logical_bytes: u64,
+    pub exact_history_logical_bytes: u64,
 }
 
 impl LocationProfile {
@@ -33,6 +35,8 @@ impl LocationProfile {
         internal_boundary_words: 2,
         edge_history_window: 300,
         exact_history_window: 50_000,
+        edge_history_logical_bytes: 4 * 1024 * 1024,
+        exact_history_logical_bytes: 16 * 1024 * 1024,
     };
 }
 

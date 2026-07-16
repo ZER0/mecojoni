@@ -111,6 +111,23 @@ async function milestone7Package(): Promise<PackageDescription> {
   };
 }
 
+async function milestone8Package(): Promise<PackageDescription> {
+  const fixture = new URL(
+    "../crates/mecojoni-core/tests/fixtures/packages/milestone8/root.meco.md",
+    import.meta.url,
+  );
+  return {
+    rootId: "root",
+    modules: [{
+      canonicalId: "root",
+      sourceId: 0,
+      sourceName: "root.meco.md",
+      source: await Deno.readTextFile(fixture),
+      resolvedImports: [],
+    }],
+  };
+}
+
 const milestone6Manifest: MessageManifest = {
   messages: [{
     id: "arrival",
@@ -118,6 +135,13 @@ const milestone6Manifest: MessageManifest = {
       { name: "hero", type: { kind: "text" } },
       { name: "count", type: { kind: "number" } },
     ],
+  }],
+};
+
+const milestone8Manifest: MessageManifest = {
+  messages: [{
+    id: "arrival",
+    arguments: [{ name: "name", type: { kind: "text" } }],
   }],
 };
 
@@ -413,6 +437,105 @@ Deno.test("Deno diverse sessions match the transactional Rust sequence", async (
     repetition.value.dispose();
   }
   assertEquals(meco.liveHandleCount, 0);
+});
+
+Deno.test("Deno round-trips nonempty replay state and provenance through WASM", async () => {
+  const meco = await instantiate();
+  const compiled = meco.compilePackage(await milestone8Package(), milestone8Manifest);
+  const session = meco.createSession(19n);
+  const repetition = meco.createRepetitionStore();
+  assert(compiled.ok, compiled.ok ? "" : compiled.error.message);
+  assert(session.ok, session.ok ? "" : session.error.message);
+  assert(repetition.ok, repetition.ok ? "" : repetition.error.message);
+  let restoredSession: ReturnType<Mecojoni["restoreSessionSnapshot"]> | undefined;
+  let restoredRepetition: ReturnType<Mecojoni["restoreRepetitionSnapshot"]> | undefined;
+  try {
+    const options = {
+      data: { playerName: { kind: "text" as const, value: "Rin" } },
+      traceSelections: true,
+      traceProvenance: true,
+    };
+    const first = meco.generateDiverse(
+      compiled.value,
+      session.value,
+      repetition.value,
+      options,
+    );
+    assert(first.ok, first.ok ? "" : first.error.message);
+    assert(first.value.provenance.length > 0, "provenance was not returned");
+    const bindingNode = first.value.provenance.find((node) => node.kind === "binding");
+    assert(bindingNode !== undefined, "binding provenance is missing");
+    assert(
+      first.value.provenance.some((node) => node.kind === "binding" && node.output === undefined),
+      "silent binding gained an output range",
+    );
+    assert(
+      first.value.provenance.some((node) => node.kind === "hostValue" && node.output !== undefined),
+      "host value provenance is missing",
+    );
+    assert(
+      first.value.provenance.some((node) =>
+        node.kind === "boundValue" && node.parent === bindingNode.id
+      ),
+      "bound-value provenance is not linked to its binding",
+    );
+    assert(
+      first.value.selections.some((selection) =>
+        selection.selectedProductionId === "fixed-opening"
+      ),
+      "stable selection ID is missing",
+    );
+
+    const sessionSnapshot = session.value.snapshot();
+    const repetitionSnapshot = repetition.value.snapshot();
+    assert(sessionSnapshot.ok, sessionSnapshot.ok ? "" : sessionSnapshot.error.message);
+    assert(
+      repetitionSnapshot.ok,
+      repetitionSnapshot.ok ? "" : repetitionSnapshot.error.message,
+    );
+    assert(sessionSnapshot.value.length > 0, "empty session snapshot");
+    assert(repetitionSnapshot.value.length > 0, "empty repetition snapshot");
+    const second = meco.generateDiverse(
+      compiled.value,
+      session.value,
+      repetition.value,
+      options,
+    );
+    assert(second.ok, second.ok ? "" : second.error.message);
+
+    restoredSession = meco.restoreSessionSnapshot(sessionSnapshot.value);
+    restoredRepetition = meco.restoreRepetitionSnapshot(repetitionSnapshot.value);
+    assert(restoredSession.ok, restoredSession.ok ? "" : restoredSession.error.message);
+    assert(
+      restoredRepetition.ok,
+      restoredRepetition.ok ? "" : restoredRepetition.error.message,
+    );
+    const replayed = meco.generateDiverse(
+      compiled.value,
+      restoredSession.value,
+      restoredRepetition.value,
+      options,
+    );
+    assert(replayed.ok, replayed.ok ? "" : replayed.error.message);
+    assertEquals(replayed.value.text, second.value.text);
+    assertEquals(replayed.value.winnerAttempt, second.value.winnerAttempt);
+    assert(
+      replayed.value.receipt.finalTextHash === second.value.receipt.finalTextHash,
+      "final text receipt hash changed after restore",
+    );
+    assert(
+      replayed.value.receipt.postRepetitionHash === second.value.receipt.postRepetitionHash,
+      "post-history receipt hash changed after restore",
+    );
+    assertEquals(replayed.value.provenance.length, second.value.provenance.length);
+  } finally {
+    if (restoredSession?.ok) restoredSession.value.dispose();
+    if (restoredRepetition?.ok) restoredRepetition.value.dispose();
+    compiled.value.dispose();
+    session.value.dispose();
+    repetition.value.dispose();
+  }
+  assertEquals(meco.liveHandleCount, 0, "snapshot round-trip leaked handles");
 });
 
 Deno.test("strict JS strings reject unpaired UTF-16 before WASM allocation", async () => {

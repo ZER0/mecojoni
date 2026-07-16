@@ -9,13 +9,13 @@ use alloc::{
 
 use crate::diverse::DiverseCandidateState;
 use crate::{
-    ArgumentSyntax, BindingTrace, BodyPartSyntax, BodySyntax, ClauseSyntax, DataBinding,
-    Diagnostic, DiagnosticCode, EligibleWeightTrace, Formatter, FormatterRequest, GuardExpression,
-    GuardValue, InputDefinition, LocaleRequest, MecoError, MecoResult, MessageDefinition,
-    MessageManifest, MessageTrace, ModuleSyntax, PackageInput, PackageManifest, Rational,
-    SchemaType, SelectionTrace, Severity, Span, SplitMix64, Value, ValueSyntax, WeightExpression,
-    WeightSyntax, diversity_factor_16_16, location_cooldown_multiplier, parse_module,
-    validate_package_input,
+    ArgumentSyntax, BindingTrace, BodyPartSyntax, BodySyntax, ClauseSyntax, CompositionFinding,
+    DataBinding, Diagnostic, DiagnosticCode, EligibleWeightTrace, Formatter, FormatterRequest,
+    GuardExpression, GuardValue, InputDefinition, LocaleRequest, MecoError, MecoResult,
+    MessageDefinition, MessageManifest, MessageTrace, ModuleSyntax, OutputRange, PackageInput,
+    PackageManifest, ProductionSyntax, ProvenanceKind, ProvenanceNode, Rational, SchemaType,
+    SelectionTrace, Severity, Span, SplitMix64, Value, ValueSyntax, WeightExpression, WeightSyntax,
+    diversity_factor_16_16, location_cooldown_multiplier, parse_module, validate_package_input,
 };
 
 /// Compatibility identifier for independent exact weighted selection.
@@ -60,6 +60,8 @@ pub struct GenerationRequest<'a> {
     pub trace_bindings: bool,
     /// Retain exact eligible and normalized weights for every selection.
     pub trace_selections: bool,
+    /// Retain source-to-output derivation nodes and exact output ranges.
+    pub trace_provenance: bool,
 }
 
 impl GenerationRequest<'_> {
@@ -72,6 +74,7 @@ impl GenerationRequest<'_> {
             data: &[],
             trace_bindings: false,
             trace_selections: false,
+            trace_provenance: false,
         }
     }
 }
@@ -87,6 +90,7 @@ pub struct GenerationResult {
     selections: Vec<SelectionTrace>,
     formatter_diagnostics: Vec<Diagnostic>,
     message: Option<MessageTrace>,
+    provenance: Vec<ProvenanceNode>,
 }
 
 impl GenerationResult {
@@ -129,6 +133,11 @@ impl GenerationResult {
     pub const fn message(&self) -> Option<&MessageTrace> {
         self.message.as_ref()
     }
+
+    #[must_use]
+    pub fn provenance(&self) -> &[ProvenanceNode] {
+        &self.provenance
+    }
 }
 
 /// Unformatted deterministic output produced before crossing the host boundary.
@@ -147,6 +156,7 @@ pub struct StructuralGenerationResult {
     sampler_words: u32,
     bindings: Vec<BindingTrace>,
     selections: Vec<SelectionTrace>,
+    provenance: Vec<ProvenanceNode>,
 }
 
 impl StructuralGenerationResult {
@@ -179,6 +189,11 @@ impl StructuralGenerationResult {
     pub fn selections(&self) -> &[SelectionTrace] {
         &self.selections
     }
+
+    #[must_use]
+    pub fn provenance(&self) -> &[ProvenanceNode] {
+        &self.provenance
+    }
 }
 
 /// Read-only graph facts retained for tooling without exposing mutable IR.
@@ -193,20 +208,29 @@ pub struct RuleAnalysis {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CompiledPart {
-    Literal(String),
+    Literal {
+        text: String,
+        span: Span,
+    },
     RuleCall {
         rule: usize,
         arguments: Vec<CompiledValue>,
+        span: Span,
     },
-    Value(CompiledValue),
+    Value {
+        value: CompiledValue,
+        span: Span,
+    },
     Capture {
         rule: usize,
         slot: usize,
         name: String,
+        span: Span,
     },
     MessageCall {
         id: String,
         arguments: Vec<(String, CompiledValue)>,
+        span: Span,
     },
 }
 
@@ -258,10 +282,14 @@ struct CompiledBinding {
     arguments: Vec<CompiledValue>,
     slot: usize,
     name: String,
+    span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledProduction {
+    id: String,
+    authored_id: bool,
+    span: Span,
     weight: CompiledWeight,
     guard: Option<CompiledGuard>,
     bindings: Vec<CompiledBinding>,
@@ -307,6 +335,7 @@ struct CompiledRule {
 /// Immutable, indexed package artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledGrammar {
+    artifact_hash: u64,
     rules: Vec<CompiledRule>,
     inputs: Vec<CompiledInput>,
     entries: Vec<(String, usize)>,
@@ -316,6 +345,12 @@ pub struct CompiledGrammar {
 }
 
 impl CompiledGrammar {
+    /// Stable content hash of canonical package sources, resolutions, and manifest.
+    #[must_use]
+    pub const fn artifact_hash(&self) -> u64 {
+        self.artifact_hash
+    }
+
     #[must_use]
     pub fn entries(&self) -> impl ExactSizeIterator<Item = &str> {
         self.entries.iter().map(|(name, _)| name.as_str())
@@ -361,6 +396,97 @@ impl CompiledGrammar {
             .map(|rule| rule.analysis)
     }
 
+    /// Returns the stable authored or content-addressed ID for one production.
+    #[must_use]
+    pub fn production_id(&self, rule: &str, production: usize) -> Option<&str> {
+        self.rules
+            .iter()
+            .find(|candidate| candidate.name == rule)
+            .and_then(|candidate| candidate.productions.get(production))
+            .map(|candidate| candidate.id.as_str())
+    }
+
+    /// Reports whether a production ID was explicitly authored.
+    #[must_use]
+    pub fn production_id_is_authored(&self, rule: &str, production: usize) -> Option<bool> {
+        self.rules
+            .iter()
+            .find(|candidate| candidate.name == rule)
+            .and_then(|candidate| candidate.productions.get(production))
+            .map(|candidate| candidate.authored_id)
+    }
+
+    /// Runs `composition/1` over reachable locally composed productions using
+    /// compiled stable identities and message-effect facts.
+    #[must_use]
+    pub fn audit_composition(&self) -> Vec<CompositionFinding> {
+        let profile = crate::CompositionProfile::V1;
+        let mut findings = Vec::new();
+        for rule in self.rules.iter().filter(|rule| rule.analysis.reachable) {
+            for (index, production) in rule.productions.iter().enumerate() {
+                if profile.complete_messages_are_exempt
+                    && matches!(
+                        production.parts.as_slice(),
+                        [CompiledPart::MessageCall { .. }]
+                    )
+                {
+                    continue;
+                }
+                let sentence_ending = production
+                    .parts
+                    .iter()
+                    .rev()
+                    .find_map(|part| match part {
+                        CompiledPart::Literal { text, .. } => text.chars().next_back(),
+                        _ => None,
+                    })
+                    .is_some_and(|character| matches!(character, '.' | '!' | '?'));
+                if !sentence_ending {
+                    continue;
+                }
+                let direct_references = u32::try_from(
+                    production
+                        .parts
+                        .iter()
+                        .filter(|part| {
+                            matches!(
+                                part,
+                                CompiledPart::RuleCall { .. } | CompiledPart::Capture { .. }
+                            )
+                        })
+                        .count(),
+                )
+                .unwrap_or(u32::MAX);
+                let mut longest_literal_run = 0_u32;
+                let mut current_literal_run = 0_u32;
+                for part in &production.parts {
+                    if let CompiledPart::Literal { text, .. } = part {
+                        current_literal_run =
+                            current_literal_run.saturating_add(crate::audit::count_words(text));
+                        longest_literal_run = longest_literal_run.max(current_literal_run);
+                    } else {
+                        current_literal_run = 0;
+                    }
+                }
+                let insufficient_references = direct_references < profile.minimum_direct_references;
+                let excessive_literal_run = longest_literal_run > profile.maximum_literal_run_words;
+                if insufficient_references || excessive_literal_run {
+                    findings.push(CompositionFinding {
+                        rule: rule.name.clone(),
+                        production_index: u32::try_from(index).unwrap_or(u32::MAX),
+                        production_id: production.id.clone(),
+                        span: production.span,
+                        direct_references,
+                        longest_literal_run,
+                        insufficient_references,
+                        excessive_literal_run,
+                    });
+                }
+            }
+        }
+        findings
+    }
+
     pub(crate) fn generate_diverse_candidate(
         &self,
         request: &GenerationRequest<'_>,
@@ -380,6 +506,7 @@ impl CompiledGrammar {
             sampler_words: structural.sampler_words,
             bindings: structural.bindings,
             selections: structural.selections,
+            provenance: structural.provenance,
             formatter_diagnostics: Vec::new(),
             message: None,
         })
@@ -419,6 +546,7 @@ impl CompiledGrammar {
             sampler_words: structural.sampler_words,
             bindings: structural.bindings,
             selections: structural.selections,
+            provenance: structural.provenance,
             formatter_diagnostics: Vec::new(),
             message: None,
         })
@@ -454,14 +582,17 @@ impl CompiledGrammar {
         let mut frames = Vec::<RuntimeFrame>::new();
         let mut binding_trace = Vec::new();
         let mut selection_trace = Vec::new();
+        let mut provenance = Vec::new();
         let mut output_scalars = 0_u32;
         let mut expansions = 0_u32;
         let mut message = None;
         let mut stack = vec![Work::Expand {
             rule: entry_rule,
             arguments: Vec::new(),
+            argument_origins: Vec::new(),
             sink: 0,
             depth: 1,
+            parent_trace: None,
         }];
 
         while let Some(work) = stack.pop() {
@@ -473,6 +604,7 @@ impl CompiledGrammar {
                     frame,
                     sink,
                     depth,
+                    trace_node,
                 } => {
                     let parts = &self.rules[rule].productions[production].parts;
                     let Some(compiled_part) = parts.get(part) else {
@@ -485,15 +617,41 @@ impl CompiledGrammar {
                         frame,
                         sink,
                         depth,
+                        trace_node,
                     });
                     match compiled_part {
-                        CompiledPart::Literal(text) => append_output(
-                            &mut buffers[sink],
-                            text,
-                            &mut output_scalars,
-                            request.limits,
-                        )?,
-                        CompiledPart::Value(value) => {
+                        CompiledPart::Literal { text, span } => {
+                            let start = output_cursor(&buffers[sink]);
+                            append_output(
+                                &mut buffers[sink],
+                                text,
+                                &mut output_scalars,
+                                request.limits,
+                            )?;
+                            record_emission(
+                                &mut provenance,
+                                request.trace_provenance,
+                                trace_node,
+                                ProvenanceKind::AuthoredText,
+                                &self.rules[rule],
+                                production,
+                                *span,
+                                sink,
+                                start,
+                                &buffers[sink],
+                                depth,
+                                None,
+                            );
+                        }
+                        CompiledPart::Value { value, span } => {
+                            let origin = compiled_value_origin(value, &frames[frame].origins);
+                            let (provenance_kind, provenance_parent) = match origin {
+                                ValueOrigin::Host => (ProvenanceKind::HostValue, trace_node),
+                                ValueOrigin::Derived(origin) => {
+                                    (ProvenanceKind::BoundValue, origin.or(trace_node))
+                                }
+                                ValueOrigin::Constant => (ProvenanceKind::BoundValue, trace_node),
+                            };
                             let value = runtime_value(value, &inputs, &frames[frame].values)?;
                             let Value::Text(text) = value else {
                                 return Err(runtime_error(
@@ -501,40 +659,86 @@ impl CompiledGrammar {
                                     "only text values can be emitted directly",
                                 ));
                             };
+                            let start = output_cursor(&buffers[sink]);
                             append_output(
                                 &mut buffers[sink],
                                 &text,
                                 &mut output_scalars,
                                 request.limits,
                             )?;
+                            record_emission(
+                                &mut provenance,
+                                request.trace_provenance,
+                                provenance_parent,
+                                provenance_kind,
+                                &self.rules[rule],
+                                production,
+                                *span,
+                                sink,
+                                start,
+                                &buffers[sink],
+                                depth,
+                                None,
+                            );
                         }
-                        CompiledPart::RuleCall { rule, arguments } => {
+                        CompiledPart::RuleCall {
+                            rule, arguments, ..
+                        } => {
+                            let argument_origins =
+                                evaluate_argument_origins(arguments, &frames[frame].origins);
                             let arguments =
                                 evaluate_arguments(arguments, &inputs, &frames[frame].values)?;
                             stack.push(Work::Expand {
                                 rule: *rule,
                                 arguments,
+                                argument_origins,
                                 sink,
                                 depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                                parent_trace: trace_node,
                             });
                         }
-                        CompiledPart::Capture { rule, slot, name } => {
+                        CompiledPart::Capture {
+                            rule: target_rule,
+                            slot,
+                            name,
+                            span,
+                        } => {
                             let start = buffers[sink].len();
+                            let start_scalar = scalar_len(&buffers[sink]);
+                            let capture_trace = push_provenance(
+                                &mut provenance,
+                                request.trace_provenance,
+                                trace_node,
+                                ProvenanceKind::EmittingCapture,
+                                &self.rules[rule],
+                                production,
+                                *span,
+                                depth,
+                                Some(name.clone()),
+                            );
                             stack.push(Work::FinishCapture {
                                 frame,
                                 slot: *slot,
                                 name: name.clone(),
                                 sink,
                                 start,
+                                start_scalar,
+                                trace_node: capture_trace,
                             });
                             stack.push(Work::Expand {
-                                rule: *rule,
+                                rule: *target_rule,
                                 arguments: Vec::new(),
+                                argument_origins: Vec::new(),
                                 sink,
                                 depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                                parent_trace: capture_trace,
                             });
                         }
-                        CompiledPart::MessageCall { id, arguments } => {
+                        CompiledPart::MessageCall {
+                            id,
+                            arguments,
+                            span,
+                        } => {
                             let locale = locale.ok_or_else(|| {
                                 runtime_error(
                                     DiagnosticCode::LOCALE,
@@ -567,6 +771,17 @@ impl CompiledGrammar {
                                     .map(|fallback| (*fallback).to_string())
                                     .collect(),
                             ));
+                            let _ = push_provenance(
+                                &mut provenance,
+                                request.trace_provenance,
+                                trace_node,
+                                ProvenanceKind::Message,
+                                &self.rules[rule],
+                                production,
+                                *span,
+                                depth,
+                                Some(id.clone()),
+                            );
                         }
                     }
                 }
@@ -577,6 +792,7 @@ impl CompiledGrammar {
                     frame,
                     sink,
                     depth,
+                    trace_node,
                 } => {
                     let bindings = &self.rules[rule].productions[production].bindings;
                     let Some(compiled_binding) = bindings.get(binding) else {
@@ -587,11 +803,23 @@ impl CompiledGrammar {
                             frame,
                             sink,
                             depth,
+                            trace_node,
                         });
                         continue;
                     };
                     let temporary_sink = buffers.len();
                     buffers.push(String::new());
+                    let binding_trace_node = push_provenance(
+                        &mut provenance,
+                        request.trace_provenance,
+                        trace_node,
+                        ProvenanceKind::Binding,
+                        &self.rules[rule],
+                        production,
+                        compiled_binding.span,
+                        depth,
+                        Some(compiled_binding.name.clone()),
+                    );
                     stack.push(Work::PrepareBinding {
                         rule,
                         production,
@@ -599,15 +827,21 @@ impl CompiledGrammar {
                         frame,
                         sink,
                         depth,
+                        trace_node,
                     });
                     stack.push(Work::FinishBinding {
                         frame,
                         slot: compiled_binding.slot,
                         name: compiled_binding.name.clone(),
                         sink: temporary_sink,
+                        trace_node: binding_trace_node,
                     });
                     stack.push(Work::Expand {
                         rule: compiled_binding.rule,
+                        argument_origins: evaluate_argument_origins(
+                            &compiled_binding.arguments,
+                            &frames[frame].origins,
+                        ),
                         arguments: evaluate_arguments(
                             &compiled_binding.arguments,
                             &inputs,
@@ -615,6 +849,7 @@ impl CompiledGrammar {
                         )?,
                         sink: temporary_sink,
                         depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                        parent_trace: binding_trace_node,
                     });
                 }
                 Work::FinishBinding {
@@ -622,10 +857,16 @@ impl CompiledGrammar {
                     slot,
                     name,
                     sink,
+                    trace_node,
                 } => {
                     let text = core::mem::take(&mut buffers[sink]);
                     let value = Value::Text(text);
-                    bind_runtime_value(&mut frames[frame], slot, value.clone())?;
+                    bind_runtime_value(
+                        &mut frames[frame],
+                        slot,
+                        value.clone(),
+                        ValueOrigin::Derived(trace_node),
+                    )?;
                     if request.trace_bindings {
                         binding_trace.push(BindingTrace::new(name, value, false));
                     }
@@ -636,6 +877,8 @@ impl CompiledGrammar {
                     name,
                     sink,
                     start,
+                    start_scalar,
+                    trace_node,
                 } => {
                     let text = buffers[sink]
                         .get(start..)
@@ -647,16 +890,44 @@ impl CompiledGrammar {
                         })?
                         .to_string();
                     let value = Value::Text(text);
-                    bind_runtime_value(&mut frames[frame], slot, value.clone())?;
+                    bind_runtime_value(
+                        &mut frames[frame],
+                        slot,
+                        value.clone(),
+                        ValueOrigin::Derived(trace_node),
+                    )?;
                     if request.trace_bindings {
                         binding_trace.push(BindingTrace::new(name, value, true));
                     }
+                    finish_provenance(
+                        &mut provenance,
+                        trace_node,
+                        sink,
+                        start,
+                        start_scalar,
+                        &buffers[sink],
+                    );
                 }
+                Work::FinishProduction {
+                    sink,
+                    start,
+                    start_scalar,
+                    trace_node,
+                } => finish_provenance(
+                    &mut provenance,
+                    trace_node,
+                    sink,
+                    start,
+                    start_scalar,
+                    &buffers[sink],
+                ),
                 Work::Expand {
                     rule,
                     arguments,
+                    argument_origins,
                     sink,
                     depth,
+                    parent_trace,
                 } => {
                     if depth > request.limits.max_depth {
                         return Err(runtime_error(
@@ -677,7 +948,9 @@ impl CompiledGrammar {
                         ));
                     }
                     let compiled_rule = &self.rules[rule];
-                    if arguments.len() != compiled_rule.parameters.len() {
+                    if arguments.len() != compiled_rule.parameters.len()
+                        || argument_origins.len() != arguments.len()
+                    {
                         return Err(runtime_error(
                             DiagnosticCode::RULE_ARITY,
                             format!(
@@ -689,7 +962,10 @@ impl CompiledGrammar {
                         ));
                     }
                     let frame = frames.len();
-                    frames.push(RuntimeFrame { values: arguments });
+                    frames.push(RuntimeFrame {
+                        values: arguments,
+                        origins: argument_origins,
+                    });
                     let mut weighted =
                         eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
                     if let Some(state) = diversity.as_deref_mut() {
@@ -716,17 +992,22 @@ impl CompiledGrammar {
                         })?;
                     let production = select_eligible_production(&weighted, choice);
                     if let Some(state) = diversity.as_deref_mut() {
-                        state.record(&compiled_rule.name, production);
+                        state.record(
+                            &compiled_rule.name,
+                            &compiled_rule.productions[production].id,
+                        );
                     }
                     if request.trace_selections {
                         selection_trace.push(SelectionTrace::new(
                             compiled_rule.name.clone(),
                             u32::try_from(production).unwrap_or(u32::MAX),
+                            compiled_rule.productions[production].id.clone(),
                             weighted
                                 .iter()
                                 .map(|weight| {
                                     EligibleWeightTrace::new(
                                         u32::try_from(weight.production).unwrap_or(u32::MAX),
+                                        compiled_rule.productions[weight.production].id.clone(),
                                         weight.base,
                                         weight.normalized,
                                     )
@@ -734,6 +1015,25 @@ impl CompiledGrammar {
                                 .collect(),
                         ));
                     }
+                    let start = buffers[sink].len();
+                    let start_scalar = scalar_len(&buffers[sink]);
+                    let production_trace = push_provenance(
+                        &mut provenance,
+                        request.trace_provenance,
+                        parent_trace,
+                        ProvenanceKind::Production,
+                        compiled_rule,
+                        production,
+                        compiled_rule.productions[production].span,
+                        depth,
+                        None,
+                    );
+                    stack.push(Work::FinishProduction {
+                        sink,
+                        start,
+                        start_scalar,
+                        trace_node: production_trace,
+                    });
                     stack.push(Work::PrepareBinding {
                         rule,
                         production,
@@ -741,6 +1041,7 @@ impl CompiledGrammar {
                         frame,
                         sink,
                         depth,
+                        trace_node: production_trace,
                     });
                 }
             }
@@ -765,6 +1066,7 @@ impl CompiledGrammar {
             sampler_words: u32::try_from(random.words()).unwrap_or(u32::MAX),
             bindings: binding_trace,
             selections: selection_trace,
+            provenance,
         })
     }
 
@@ -792,6 +1094,7 @@ impl CompiledGrammar {
                     sampler_words: structural.sampler_words,
                     bindings: structural.bindings,
                     selections: structural.selections,
+                    provenance: structural.provenance,
                     formatter_diagnostics: Vec::new(),
                     message: None,
                 });
@@ -807,6 +1110,8 @@ impl CompiledGrammar {
             response.work_units,
             response.replayable,
         );
+        let mut provenance = structural.provenance;
+        finalize_formatted_provenance(&mut provenance, &response.text);
         Ok(GenerationResult {
             text: response.text,
             entry: structural.entry,
@@ -814,6 +1119,7 @@ impl CompiledGrammar {
             sampler_words: structural.sampler_words,
             bindings: structural.bindings,
             selections: structural.selections,
+            provenance,
             formatter_diagnostics: response.diagnostics,
             message: Some(message_trace),
         })
@@ -893,8 +1199,10 @@ enum Work {
     Expand {
         rule: usize,
         arguments: Vec<Value>,
+        argument_origins: Vec<ValueOrigin>,
         sink: usize,
         depth: u32,
+        parent_trace: Option<u32>,
     },
     Continue {
         rule: usize,
@@ -903,6 +1211,7 @@ enum Work {
         frame: usize,
         sink: usize,
         depth: u32,
+        trace_node: Option<u32>,
     },
     PrepareBinding {
         rule: usize,
@@ -911,12 +1220,14 @@ enum Work {
         frame: usize,
         sink: usize,
         depth: u32,
+        trace_node: Option<u32>,
     },
     FinishBinding {
         frame: usize,
         slot: usize,
         name: String,
         sink: usize,
+        trace_node: Option<u32>,
     },
     FinishCapture {
         frame: usize,
@@ -924,12 +1235,28 @@ enum Work {
         name: String,
         sink: usize,
         start: usize,
+        start_scalar: u64,
+        trace_node: Option<u32>,
+    },
+    FinishProduction {
+        sink: usize,
+        start: usize,
+        start_scalar: u64,
+        trace_node: Option<u32>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeFrame {
     values: Vec<Value>,
+    origins: Vec<ValueOrigin>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ValueOrigin {
+    Host,
+    Derived(Option<u32>),
+    Constant,
 }
 
 struct ModuleBuild<'a> {
@@ -1051,7 +1378,12 @@ pub fn compile_package_with_manifest(
     for (module_index, module) in modules.iter().enumerate() {
         for (local_rule, rule) in module.syntax.rules.iter().enumerate() {
             let global_rule = offsets[module_index] + local_rule;
-            let mut productions = Vec::with_capacity(rule.productions.len());
+            let qualified_rule = format!(
+                "{}.{}",
+                module.syntax.front_matter.module().value(),
+                rule.name.value()
+            );
+            let mut productions = Vec::<CompiledProduction>::with_capacity(rule.productions.len());
             for production in &rule.productions {
                 let mut scope = CompileScope {
                     module: module_index,
@@ -1086,6 +1418,7 @@ pub fn compile_package_with_manifest(
                         arguments,
                         slot,
                         name: binding.name.value().clone(),
+                        span: binding.span,
                     });
                     scope
                         .locals
@@ -1102,7 +1435,27 @@ pub fn compile_package_with_manifest(
                     manifest,
                 )?;
                 validate_bound_value_usage(production.span, &bindings, &parts)?;
+                let id = stable_production_id(&qualified_rule, production);
+                if let Some(previous) = productions.iter().find(|candidate| candidate.id == id) {
+                    return Err(MecoError::with_related(
+                        Diagnostic::new(
+                            DiagnosticCode::PRODUCTION_ID,
+                            Severity::Error,
+                            Some(production.span),
+                            format!("production ID `{id}` is not unique within `{qualified_rule}`"),
+                        ),
+                        [Diagnostic::new(
+                            DiagnosticCode::PRODUCTION_ID,
+                            Severity::Error,
+                            Some(previous.span),
+                            "the colliding production is here",
+                        )],
+                    ));
+                }
                 productions.push(CompiledProduction {
+                    id,
+                    authored_id: production.authored_id.is_some(),
+                    span: production.span,
                     weight,
                     guard,
                     bindings,
@@ -1112,11 +1465,7 @@ pub fn compile_package_with_manifest(
             }
             validate_static_weight_budget(rule.span, &productions)?;
             rules.push(CompiledRule {
-                name: format!(
-                    "{}.{}",
-                    module.syntax.front_matter.module().value(),
-                    rule.name.value()
-                ),
+                name: qualified_rule,
                 parameters: rule_parameters[global_rule].clone(),
                 span: rule.span,
                 productions,
@@ -1149,6 +1498,7 @@ pub fn compile_package_with_manifest(
     prepare_diversity_metadata(&mut rules);
     let warnings = recursion_warnings(&rules);
     Ok(CompiledGrammar {
+        artifact_hash: package_artifact_hash(package, manifest),
         rules,
         inputs,
         entries,
@@ -1156,6 +1506,36 @@ pub fn compile_package_with_manifest(
         warnings,
         message_manifest: manifest.clone(),
     })
+}
+
+fn package_artifact_hash(package: &PackageInput, manifest: &MessageManifest) -> u64 {
+    let mut hash = StableHasher::new();
+    hash.string("mecojoni-artifact-fnv1a64/1");
+    hash.string(&package.root_id);
+    let mut modules = package.modules.iter().collect::<Vec<_>>();
+    modules.sort_by(|left, right| left.canonical_id.cmp(&right.canonical_id));
+    for module in modules {
+        hash.string(&module.canonical_id);
+        hash.string(module.source.text());
+        let mut resolutions = module.resolved_imports.iter().collect::<Vec<_>>();
+        resolutions.sort_by(|left, right| {
+            (&left.authored_path, &left.target_id).cmp(&(&right.authored_path, &right.target_id))
+        });
+        for resolution in resolutions {
+            hash.string(&resolution.authored_path);
+            hash.string(&resolution.target_id);
+        }
+    }
+    let mut messages = manifest.messages.iter().collect::<Vec<_>>();
+    messages.sort_by(|left, right| left.id.cmp(&right.id));
+    for message in messages {
+        hash.string(&message.id);
+        for argument in &message.arguments {
+            hash.string(&argument.name);
+            hash.string(schema_type_name(&argument.type_));
+        }
+    }
+    hash.finish()
 }
 
 fn schema_type_from_value_type(type_: &ValueType) -> SchemaType {
@@ -1472,7 +1852,10 @@ fn lower_body(
         BodySyntax::Block(block) if block.raw => Ok(if block.text.value().is_empty() {
             Vec::new()
         } else {
-            vec![CompiledPart::Literal(block.text.value().clone())]
+            vec![CompiledPart::Literal {
+                text: block.text.value().clone(),
+                span: block.text.span(),
+            }]
         }),
         BodySyntax::Block(block) => lower_parts(
             package,
@@ -1516,7 +1899,10 @@ fn lower_parts(
         match part {
             BodyPartSyntax::Literal(literal) => {
                 if !literal.value().is_empty() {
-                    lowered.push(CompiledPart::Literal(literal.value().clone()));
+                    lowered.push(CompiledPart::Literal {
+                        text: literal.value().clone(),
+                        span: literal.span(),
+                    });
                 }
             }
             BodyPartSyntax::RuleReference(reference) => {
@@ -1532,6 +1918,7 @@ fn lower_parts(
                 lowered.push(CompiledPart::RuleCall {
                     rule: target,
                     arguments: Vec::new(),
+                    span: reference.span(),
                 });
             }
             BodyPartSyntax::RuleCall(call) => {
@@ -1551,13 +1938,10 @@ fn lower_parts(
                         scope,
                         schemas,
                     )?,
+                    span: call.span,
                 });
             }
-            BodyPartSyntax::EmittingCapture {
-                rule,
-                name,
-                span: _,
-            } => {
+            BodyPartSyntax::EmittingCapture { rule, name, span } => {
                 ensure_new_local(scope, schemas, name.value(), name.span())?;
                 let target = resolve_rule(
                     package,
@@ -1573,6 +1957,7 @@ fn lower_parts(
                     rule: target,
                     slot,
                     name: name.value().clone(),
+                    span: *span,
                 });
                 scope.locals.push((name.value().clone(), ValueType::Text));
             }
@@ -1596,7 +1981,10 @@ fn lower_parts(
                         ),
                     ));
                 }
-                lowered.push(CompiledPart::Value(value));
+                lowered.push(CompiledPart::Value {
+                    value,
+                    span: reference.span(),
+                });
             }
             BodyPartSyntax::MessageCall(call) => {
                 let definition = manifest
@@ -1616,6 +2004,7 @@ fn lower_parts(
                 lowered.push(CompiledPart::MessageCall {
                     id: definition.id.clone(),
                     arguments: compile_message_arguments(call, definition, scope, schemas)?,
+                    span: call.span,
                 });
             }
         }
@@ -1898,7 +2287,216 @@ fn part_is_complete_message(part: &CompiledPart, effects: &[bool]) -> bool {
     match part {
         CompiledPart::MessageCall { .. } => true,
         CompiledPart::RuleCall { rule, .. } => effects[*rule],
-        CompiledPart::Literal(_) | CompiledPart::Value(_) | CompiledPart::Capture { .. } => false,
+        CompiledPart::Literal { .. }
+        | CompiledPart::Value { .. }
+        | CompiledPart::Capture { .. } => false,
+    }
+}
+
+const PRODUCTION_ID_HASH_VERSION: &str = "production-fnv1a64/1";
+
+pub(crate) fn stable_production_id(rule: &str, production: &ProductionSyntax) -> String {
+    if let Some(authored) = &production.authored_id {
+        return authored.value().clone();
+    }
+    let mut hash = StableHasher::new();
+    hash.string(PRODUCTION_ID_HASH_VERSION);
+    hash.string(rule);
+    hash.production(production);
+    format!("derived-{:016x}", hash.finish())
+}
+
+struct StableHasher(u64);
+
+impl StableHasher {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    const fn finish(self) -> u64 {
+        self.0
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        self.0 = bytes.iter().fold(self.0, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    }
+
+    fn tag(&mut self, tag: u8) {
+        self.bytes(&[tag]);
+    }
+
+    fn string(&mut self, value: &str) {
+        self.bytes(&u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+        self.bytes(value.as_bytes());
+    }
+
+    fn rational(&mut self, value: Rational) {
+        self.bytes(&value.numerator().to_le_bytes());
+        self.bytes(&value.denominator().to_le_bytes());
+    }
+
+    fn production(&mut self, production: &ProductionSyntax) {
+        for clause in &production.clauses {
+            match clause {
+                ClauseSyntax::Guard(guard) => {
+                    self.tag(1);
+                    self.guard(guard.value());
+                }
+                ClauseSyntax::Binding(binding) => {
+                    self.tag(2);
+                    self.string(binding.rule.value());
+                    self.arguments(&binding.arguments);
+                    self.string(binding.name.value());
+                }
+            }
+        }
+        self.body(&production.body);
+    }
+
+    fn body(&mut self, body: &BodySyntax) {
+        match body {
+            BodySyntax::Empty(_) => self.tag(3),
+            BodySyntax::Block(block) => {
+                self.tag(4);
+                self.tag(u8::from(block.raw));
+                self.tag(match block.chomp {
+                    crate::BlockChomp::Clip => 0,
+                    crate::BlockChomp::Strip => 1,
+                    crate::BlockChomp::Keep => 2,
+                });
+                self.string(block.text.value());
+            }
+            BodySyntax::Parts(parts) => {
+                self.tag(5);
+                self.parts(parts);
+            }
+        }
+    }
+
+    fn parts(&mut self, parts: &[BodyPartSyntax]) {
+        self.bytes(&u64::try_from(parts.len()).unwrap_or(u64::MAX).to_le_bytes());
+        for part in parts {
+            match part {
+                BodyPartSyntax::Literal(value) => {
+                    self.tag(6);
+                    self.string(value.value());
+                }
+                BodyPartSyntax::RuleReference(value) => {
+                    self.tag(7);
+                    self.string(value.value());
+                }
+                BodyPartSyntax::EmittingCapture { rule, name, .. } => {
+                    self.tag(8);
+                    self.string(rule.value());
+                    self.string(name.value());
+                }
+                BodyPartSyntax::ValueReference(value) => {
+                    self.tag(9);
+                    self.string(value.value());
+                }
+                BodyPartSyntax::RuleCall(call) => {
+                    self.tag(10);
+                    self.string(call.target.value());
+                    self.arguments(&call.arguments);
+                }
+                BodyPartSyntax::MessageCall(call) => {
+                    self.tag(11);
+                    self.string(call.target.value());
+                    self.arguments(&call.arguments);
+                }
+            }
+        }
+    }
+
+    fn arguments(&mut self, arguments: &[ArgumentSyntax]) {
+        self.bytes(
+            &u64::try_from(arguments.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        for argument in arguments {
+            self.string(argument.name.value());
+            self.value(&argument.value);
+        }
+    }
+
+    fn value(&mut self, value: &ValueSyntax) {
+        match value {
+            ValueSyntax::Reference(value) => {
+                self.tag(12);
+                self.string(value.value());
+            }
+            ValueSyntax::Number(value) => {
+                self.tag(13);
+                self.rational(*value.value());
+            }
+            ValueSyntax::Text(value) => {
+                self.tag(14);
+                self.string(value.value());
+            }
+            ValueSyntax::Boolean(value) => {
+                self.tag(15);
+                self.tag(u8::from(*value.value()));
+            }
+        }
+    }
+
+    fn guard(&mut self, guard: &GuardExpression) {
+        match guard {
+            GuardExpression::Value(value) => {
+                self.tag(16);
+                self.guard_value(value);
+            }
+            GuardExpression::Is(left, right) => self.guard_pair(17, left, right),
+            GuardExpression::IsNot(left, right) => self.guard_pair(18, left, right),
+            GuardExpression::Less(left, right) => self.guard_pair(19, left, right),
+            GuardExpression::LessOrEqual(left, right) => self.guard_pair(20, left, right),
+            GuardExpression::Greater(left, right) => self.guard_pair(21, left, right),
+            GuardExpression::GreaterOrEqual(left, right) => self.guard_pair(22, left, right),
+            GuardExpression::Not(value) => {
+                self.tag(23);
+                self.guard(value);
+            }
+            GuardExpression::And(left, right) => {
+                self.tag(24);
+                self.guard(left);
+                self.guard(right);
+            }
+            GuardExpression::Or(left, right) => {
+                self.tag(25);
+                self.guard(left);
+                self.guard(right);
+            }
+        }
+    }
+
+    fn guard_pair(&mut self, tag: u8, left: &GuardValue, right: &GuardValue) {
+        self.tag(tag);
+        self.guard_value(left);
+        self.guard_value(right);
+    }
+
+    fn guard_value(&mut self, value: &GuardValue) {
+        match value {
+            GuardValue::Name(value) => {
+                self.tag(26);
+                self.string(value);
+            }
+            GuardValue::Number(value) => {
+                self.tag(27);
+                self.rational(*value);
+            }
+            GuardValue::Boolean(value) => {
+                self.tag(28);
+                self.tag(u8::from(*value));
+            }
+            GuardValue::Text(value) => {
+                self.tag(29);
+                self.string(value);
+            }
+        }
     }
 }
 
@@ -1956,7 +2554,7 @@ fn validate_bound_value_usage(
     }
     for part in parts {
         match part {
-            CompiledPart::Value(value) => collect_local_value(value, &mut used),
+            CompiledPart::Value { value, .. } => collect_local_value(value, &mut used),
             CompiledPart::RuleCall { arguments, .. } => {
                 for argument in arguments {
                     collect_local_value(argument, &mut used);
@@ -1967,7 +2565,7 @@ fn validate_bound_value_usage(
                     collect_local_value(argument, &mut used);
                 }
             }
-            CompiledPart::Literal(_) | CompiledPart::Capture { .. } => {}
+            CompiledPart::Literal { .. } | CompiledPart::Capture { .. } => {}
         }
     }
     for (slot, name) in bindings
@@ -2484,9 +3082,7 @@ fn diverse_eligible_weights(
     let cooled = recent.iter().rev().take(gap).copied().collect::<Vec<_>>();
     let available = eligible
         .iter()
-        .filter(|candidate| {
-            !cooled.contains(&u32::try_from(candidate.production).unwrap_or(u32::MAX))
-        })
+        .filter(|candidate| !cooled.contains(&rule.productions[candidate.production].id.as_str()))
         .map(|candidate| candidate.production)
         .collect::<Vec<_>>();
     if available.is_empty() {
@@ -2495,9 +3091,9 @@ fn diverse_eligible_weights(
             .max_by_key(|candidate| {
                 (
                     state
-                        .selection_age(&rule.name, candidate.production)
+                        .selection_age(&rule.name, &rule.productions[candidate.production].id)
                         .unwrap_or(u32::MAX),
-                    core::cmp::Reverse(candidate.production),
+                    core::cmp::Reverse(rule.productions[candidate.production].id.as_str()),
                 )
             })
             .map(|candidate| candidate.production)
@@ -2513,7 +3109,7 @@ fn diverse_eligible_weights(
         let diversity = Rational::new(i64::from(production.diversity_factor_16_16), 1 << 16)
             .map_err(|_| weight_runtime_overflow("diversity factor exceeds rational budget"))?;
         let cooldown = state
-            .selection_age(&rule.name, candidate.production)
+            .selection_age(&rule.name, &production.id)
             .map_or(Ok(Rational::ONE), location_cooldown_multiplier)
             .map_err(|_| weight_runtime_overflow("cooldown factor exceeds rational budget"))?;
         effective.push(
@@ -2698,14 +3294,38 @@ fn evaluate_arguments(
         .collect()
 }
 
-fn bind_runtime_value(frame: &mut RuntimeFrame, slot: usize, value: Value) -> MecoResult<()> {
-    if frame.values.len() != slot {
+fn evaluate_argument_origins(
+    arguments: &[CompiledValue],
+    locals: &[ValueOrigin],
+) -> Vec<ValueOrigin> {
+    arguments
+        .iter()
+        .map(|value| compiled_value_origin(value, locals))
+        .collect()
+}
+
+fn compiled_value_origin(value: &CompiledValue, locals: &[ValueOrigin]) -> ValueOrigin {
+    match value {
+        CompiledValue::Input(_) => ValueOrigin::Host,
+        CompiledValue::Local(slot) => locals.get(*slot).copied().unwrap_or(ValueOrigin::Constant),
+        CompiledValue::Constant(_) => ValueOrigin::Constant,
+    }
+}
+
+fn bind_runtime_value(
+    frame: &mut RuntimeFrame,
+    slot: usize,
+    value: Value,
+    origin: ValueOrigin,
+) -> MecoResult<()> {
+    if frame.values.len() != slot || frame.origins.len() != slot {
         return Err(runtime_error(
             DiagnosticCode::BINDING_NAME,
             "binding slot order is inconsistent with the compiled frame",
         ));
     }
     frame.values.push(value);
+    frame.origins.push(origin);
     Ok(())
 }
 
@@ -2727,6 +3347,113 @@ fn validate_runtime_type(value: &Value, expected: &ValueType) -> Result<(), Stri
             expected.display_name(),
             value.kind_name()
         ))
+    }
+}
+
+fn output_cursor(output: &str) -> (usize, u64) {
+    (output.len(), scalar_len(output))
+}
+
+fn scalar_len(output: &str) -> u64 {
+    u64::try_from(output.chars().count()).unwrap_or(u64::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_provenance(
+    nodes: &mut Vec<ProvenanceNode>,
+    enabled: bool,
+    parent: Option<u32>,
+    kind: ProvenanceKind,
+    rule: &CompiledRule,
+    production: usize,
+    source_span: Span,
+    depth: u32,
+    name: Option<String>,
+) -> Option<u32> {
+    if !enabled {
+        return None;
+    }
+    let id = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
+    nodes.push(ProvenanceNode::new(
+        id,
+        parent,
+        kind,
+        rule.name.clone(),
+        rule.productions[production].id.clone(),
+        source_span,
+        None,
+        depth,
+        name,
+    ));
+    Some(id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_emission(
+    nodes: &mut Vec<ProvenanceNode>,
+    enabled: bool,
+    parent: Option<u32>,
+    kind: ProvenanceKind,
+    rule: &CompiledRule,
+    production: usize,
+    source_span: Span,
+    sink: usize,
+    start: (usize, u64),
+    output: &str,
+    depth: u32,
+    name: Option<String>,
+) {
+    let node = push_provenance(
+        nodes,
+        enabled,
+        parent,
+        kind,
+        rule,
+        production,
+        source_span,
+        depth,
+        name,
+    );
+    finish_provenance(nodes, node, sink, start.0, start.1, output);
+}
+
+fn finish_provenance(
+    nodes: &mut [ProvenanceNode],
+    node: Option<u32>,
+    sink: usize,
+    start: usize,
+    start_scalar: u64,
+    output: &str,
+) {
+    let Some(node) = node.and_then(|value| usize::try_from(value).ok()) else {
+        return;
+    };
+    let range = (sink == 0).then(|| {
+        OutputRange::new(
+            u64::try_from(start).unwrap_or(u64::MAX),
+            u64::try_from(output.len()).unwrap_or(u64::MAX),
+            start_scalar,
+            scalar_len(output),
+        )
+    });
+    if let Some(node) = nodes.get_mut(node) {
+        node.set_output(range);
+    }
+}
+
+fn finalize_formatted_provenance(nodes: &mut [ProvenanceNode], text: &str) {
+    let full = OutputRange::new(
+        0,
+        u64::try_from(text.len()).unwrap_or(u64::MAX),
+        0,
+        scalar_len(text),
+    );
+    for node in nodes {
+        let formatted_ancestor = node.kind() == ProvenanceKind::Production
+            && node.output().is_some_and(OutputRange::is_empty);
+        if node.kind() == ProvenanceKind::Message || formatted_ancestor {
+            node.set_output(Some(full));
+        }
     }
 }
 
@@ -2952,10 +3679,10 @@ fn nullable_rules(rules: &[CompiledRule], _edges: &[Vec<usize>]) -> Vec<bool> {
         rules,
         |production| {
             production.parts.iter().all(|part| match part {
-                CompiledPart::Literal(text) => text.is_empty(),
+                CompiledPart::Literal { text, .. } => text.is_empty(),
                 CompiledPart::RuleCall { .. }
                 | CompiledPart::Capture { .. }
-                | CompiledPart::Value(_) => true,
+                | CompiledPart::Value { .. } => true,
                 CompiledPart::MessageCall { .. } => false,
             })
         },
@@ -3036,9 +3763,9 @@ fn solve_monotone_rule_property(
 fn part_rule(part: &CompiledPart) -> Option<usize> {
     match part {
         CompiledPart::RuleCall { rule, .. } | CompiledPart::Capture { rule, .. } => Some(*rule),
-        CompiledPart::Literal(_) | CompiledPart::Value(_) | CompiledPart::MessageCall { .. } => {
-            None
-        }
+        CompiledPart::Literal { .. }
+        | CompiledPart::Value { .. }
+        | CompiledPart::MessageCall { .. } => None,
     }
 }
 
@@ -3178,7 +3905,8 @@ mod tests {
     use crate::{
         DataBinding, Diagnostic, DiagnosticCode, Formatter, FormatterRequest, FormatterResult,
         LocaleRequest, MecoResult, MessageArgument, MessageDefinition, MessageManifest,
-        PackageInput, PackageSource, Rational, SchemaType, Severity, SourceFile, SourceId, Value,
+        OutputRange, PackageInput, PackageSource, ProvenanceKind, Rational, SchemaType, Severity,
+        SourceFile, SourceId, Value,
     };
 
     fn package(source: &str) -> PackageInput {
@@ -3276,6 +4004,7 @@ mod tests {
         let request = GenerationRequest {
             data: &request_data,
             trace_bindings: true,
+            trace_provenance: true,
             ..GenerationRequest::with_seed(0)
         };
         assert_eq!(
@@ -3304,6 +4033,21 @@ mod tests {
         assert_eq!(message.message_id(), "arrival");
         assert_eq!(message.actual_locale(), "en");
         assert!(message.replayable());
+        let message_node = generated
+            .provenance()
+            .iter()
+            .find(|node| node.kind() == ProvenanceKind::Message)
+            .expect("coarse message provenance");
+        assert_eq!(message_node.name(), Some("arrival"));
+        assert_eq!(
+            message_node.output(),
+            Some(OutputRange::new(
+                0,
+                generated.text().len() as u64,
+                0,
+                generated.text().chars().count() as u64
+            ))
+        );
         assert_eq!(grammar.manifest().messages, arrival_manifest());
         assert_eq!(grammar.manifest().inputs[0].name, "itemCount");
     }
@@ -3444,6 +4188,7 @@ mod tests {
             data: &[],
             trace_bindings: false,
             trace_selections: false,
+            trace_provenance: false,
         };
         let error = grammar
             .generate_weighted(&request)
@@ -3722,5 +4467,130 @@ mod tests {
                 .code(),
             DiagnosticCode::SAMPLER_BUDGET
         );
+    }
+
+    #[test]
+    fn production_ids_survive_reordering_and_authored_ids_survive_edits() {
+        let header = "---\nmeco: 2\nmodule: root\nentry: line\nexports: [line]\n---\n# line\n";
+        let first = compile_package(&package(&format!(
+            "{header}- Alpha.\n- Beta.\n- [weight = 1, id = fixed] Before.\n"
+        )))
+        .expect("identity fixture compiles");
+        let reordered = compile_package(&package(&format!(
+            "{header}- Beta.\n- Alpha.\n- [weight = 9, id = fixed] After.\n"
+        )))
+        .expect("reordered identity fixture compiles");
+
+        assert_eq!(
+            first.production_id("root.line", 0),
+            reordered.production_id("root.line", 1)
+        );
+        assert_eq!(
+            first.production_id("root.line", 1),
+            reordered.production_id("root.line", 0)
+        );
+        assert_eq!(first.production_id("root.line", 2), Some("fixed"));
+        assert_eq!(reordered.production_id("root.line", 2), Some("fixed"));
+        assert_eq!(
+            reordered.production_id_is_authored("root.line", 2),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn identical_unlabelled_productions_are_rejected_as_identity_collisions() {
+        let error = compile_package(&package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: line\nexports: [line]\n---\n",
+            "# line\n- same\n- same\n",
+        )))
+        .expect_err("identical alternatives cannot receive stable IDs");
+
+        assert_eq!(error.diagnostics()[0].code(), DiagnosticCode::PRODUCTION_ID);
+        assert_eq!(error.diagnostics().len(), 2);
+    }
+
+    #[test]
+    fn provenance_covers_visible_emitters_and_keeps_bindings_non_emitting() {
+        let grammar = compile_package(&package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: line\nexports: [line]\n",
+            "inputs:\n  playerName: text\n---\n",
+            "# line\n- [weight = 1, id = root-shell] {name as hero}\n",
+            "  Begin @deep $playerName and $hero.\n",
+            "# name\n- [weight = 1, id = bound-name] Ada\n",
+            "# deep\n- [weight = 1, id = deep-word] middle\n",
+        )))
+        .expect("provenance fixture compiles");
+        let values = vec![DataBinding::new(
+            "playerName".to_string(),
+            Value::Text("Rin".to_string()),
+        )];
+        let result = grammar
+            .generate_weighted(&GenerationRequest {
+                data: &values,
+                trace_selections: true,
+                trace_provenance: true,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect("traced generation succeeds");
+        let untraced = grammar
+            .generate_weighted(&GenerationRequest {
+                data: &values,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect("untraced generation succeeds");
+
+        assert_eq!(result.text(), "Begin middle Rin and Ada.");
+        assert_eq!(untraced.text(), result.text());
+        assert_eq!(untraced.expansions(), result.expansions());
+        assert_eq!(untraced.sampler_words(), result.sampler_words());
+        assert!(untraced.provenance().is_empty());
+        assert!(
+            result
+                .selections()
+                .iter()
+                .any(|selection| selection.selected_production_id() == "root-shell")
+        );
+        let binding = result
+            .provenance()
+            .iter()
+            .find(|node| node.kind() == ProvenanceKind::Binding)
+            .expect("binding node retained");
+        assert_eq!(binding.name(), Some("hero"));
+        assert_eq!(binding.output(), None);
+        assert!(result.provenance().iter().any(|node| {
+            node.kind() == ProvenanceKind::HostValue
+                && node.output().is_some_and(|range| {
+                    let start = usize::try_from(range.start_byte()).expect("test range fits usize");
+                    let end = usize::try_from(range.end_byte()).expect("test range fits usize");
+                    &result.text()[start..end] == "Rin"
+                })
+        }));
+        assert!(result.provenance().iter().any(|node| {
+            node.kind() == ProvenanceKind::BoundValue
+                && node.parent() == Some(binding.id())
+                && node.output().is_some_and(|range| {
+                    let start = usize::try_from(range.start_byte()).expect("test range fits usize");
+                    let end = usize::try_from(range.end_byte()).expect("test range fits usize");
+                    &result.text()[start..end] == "Ada"
+                })
+        }));
+
+        let mut covered = vec![false; result.text().chars().count()];
+        for node in result.provenance().iter().filter(|node| {
+            matches!(
+                node.kind(),
+                ProvenanceKind::AuthoredText
+                    | ProvenanceKind::HostValue
+                    | ProvenanceKind::BoundValue
+                    | ProvenanceKind::Message
+            )
+        }) {
+            if let Some(range) = node.output() {
+                for scalar in range.start_scalar()..range.end_scalar() {
+                    covered[usize::try_from(scalar).expect("small fixture scalar")] = true;
+                }
+            }
+        }
+        assert!(covered.into_iter().all(core::convert::identity));
     }
 }

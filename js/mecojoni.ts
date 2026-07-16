@@ -7,6 +7,10 @@ const OP_GENERATE_STRUCTURAL = 6;
 const OP_REPETITION_CREATE = 7;
 const OP_SESSION_CREATE = 8;
 const OP_GENERATE_DIVERSE = 9;
+const OP_SESSION_SNAPSHOT_EXPORT = 10;
+const OP_SESSION_SNAPSHOT_IMPORT = 11;
+const OP_REPETITION_SNAPSHOT_EXPORT = 12;
+const OP_REPETITION_SNAPSHOT_IMPORT = 13;
 
 const PAYLOAD_ERROR = 0;
 const PAYLOAD_PACKAGE = 1;
@@ -14,6 +18,7 @@ const PAYLOAD_COMPILE = 2;
 const PAYLOAD_GENERATE = 3;
 const PAYLOAD_STRUCTURAL = 4;
 const PAYLOAD_DIVERSE = 5;
+const PAYLOAD_SNAPSHOT = 6;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -137,6 +142,7 @@ export interface GenerationOutput {
   samplerWords: number;
   bindings: BindingOutput[];
   selections: SelectionOutput[];
+  provenance: ProvenanceOutput[];
   formatterDiagnostics: MecoDiagnostic[];
   message?: MessageOutput;
 }
@@ -147,6 +153,56 @@ export interface DiverseOutput extends GenerationOutput {
   exactRepetitions: number;
   edgeRepetitions: bigint;
   committedRevision: bigint;
+  receipt: ReplayReceiptOutput;
+}
+
+export type ProvenanceKind =
+  | "production"
+  | "authoredText"
+  | "hostValue"
+  | "boundValue"
+  | "emittingCapture"
+  | "binding"
+  | "message";
+
+export interface OutputRange {
+  startByte: bigint;
+  endByte: bigint;
+  startScalar: bigint;
+  endScalar: bigint;
+}
+
+export interface ProvenanceOutput {
+  id: number;
+  parent?: number;
+  kind: ProvenanceKind;
+  rule: string;
+  productionId: string;
+  sourceSpan: SourceSpan;
+  output?: OutputRange;
+  depth: number;
+  name?: string;
+}
+
+export interface ReplayReceiptOutput {
+  version: number;
+  grammarHash: bigint;
+  samplerVersion: string;
+  normalizerVersion: string;
+  tokenizerVersion: string;
+  preSessionHash: bigint;
+  preSessionWords: bigint;
+  preRepetitionHash: bigint;
+  preRepetitionRevision: bigint;
+  reservedWords: bigint;
+  requestDigest: bigint;
+  effectiveEntry: string;
+  winnerAttempt: number;
+  derivationHash: bigint;
+  finalTextHash: bigint;
+  postSessionHash: bigint;
+  postRepetitionHash: bigint;
+  postRepetitionRevision: bigint;
 }
 
 export type MecoValue =
@@ -163,6 +219,7 @@ export interface BindingOutput {
 
 export interface EligibleWeightOutput {
   production: number;
+  productionId: string;
   baseWeight: { numerator: bigint; denominator: bigint };
   normalizedWeight: bigint;
 }
@@ -170,6 +227,7 @@ export interface EligibleWeightOutput {
 export interface SelectionOutput {
   rule: string;
   selectedProduction: number;
+  selectedProductionId: string;
   eligible: EligibleWeightOutput[];
 }
 
@@ -188,6 +246,7 @@ export interface GenerationOptions {
   data?: Readonly<Record<string, MecoValue>>;
   traceBindings?: boolean;
   traceSelections?: boolean;
+  traceProvenance?: boolean;
   locale?: string;
   fallbackLocales?: readonly string[];
   formatter?: MecoFormatter;
@@ -199,6 +258,7 @@ export interface DiverseOptions {
   data?: Readonly<Record<string, MecoValue>>;
   traceBindings?: boolean;
   traceSelections?: boolean;
+  traceProvenance?: boolean;
   cancelled?: boolean;
 }
 
@@ -259,11 +319,19 @@ export class RepetitionStore extends OwnedHandle {
   constructor(owner: Mecojoni, handle: number) {
     super(owner, handle);
   }
+
+  snapshot(): MecoResult<Uint8Array> {
+    return this.owner.exportRepetitionSnapshot(this);
+  }
 }
 
 export class SamplerSession extends OwnedHandle {
   constructor(owner: Mecojoni, handle: number) {
     super(owner, handle);
+  }
+
+  snapshot(): MecoResult<Uint8Array> {
+    return this.owner.exportSessionSnapshot(this);
   }
 }
 
@@ -407,6 +475,30 @@ export class Mecojoni {
     }
   }
 
+  exportSessionSnapshot(session: SamplerSession): MecoResult<Uint8Array> {
+    return this.exportStateSnapshot(OP_SESSION_SNAPSHOT_EXPORT, session);
+  }
+
+  restoreSessionSnapshot(snapshot: Uint8Array): MecoResult<SamplerSession> {
+    return this.importStateSnapshot(
+      OP_SESSION_SNAPSHOT_IMPORT,
+      snapshot,
+      (handle) => new SamplerSession(this, handle),
+    );
+  }
+
+  exportRepetitionSnapshot(repetition: RepetitionStore): MecoResult<Uint8Array> {
+    return this.exportStateSnapshot(OP_REPETITION_SNAPSHOT_EXPORT, repetition);
+  }
+
+  restoreRepetitionSnapshot(snapshot: Uint8Array): MecoResult<RepetitionStore> {
+    return this.importStateSnapshot(
+      OP_REPETITION_SNAPSHOT_IMPORT,
+      snapshot,
+      (handle) => new RepetitionStore(this, handle),
+    );
+  }
+
   generateDiverse(
     grammar: CompiledGrammar,
     session: SamplerSession,
@@ -430,6 +522,7 @@ export class Mecojoni {
       writer.u32(limits.maxSamplerWords);
       writer.u8(options.traceBindings === true ? 1 : 0);
       writer.u8(options.traceSelections === true ? 1 : 0);
+      writer.u8(options.traceProvenance === true ? 1 : 0);
       const data = Object.entries(options.data ?? {}).sort(([left], [right]) =>
         left < right ? -1 : left > right ? 1 : 0
       );
@@ -456,6 +549,7 @@ export class Mecojoni {
         exactRepetitions: decoded.reader.u32(),
         edgeRepetitions: decoded.reader.u64(),
         committedRevision: decoded.reader.u64(),
+        receipt: readReplayReceipt(decoded.reader),
       };
       decoded.reader.finish();
       return { ok: true, value, diagnostics: [] };
@@ -484,6 +578,7 @@ export class Mecojoni {
       writer.u32(limits.maxSamplerWords);
       writer.u8(options.traceBindings === true ? 1 : 0);
       writer.u8(options.traceSelections === true ? 1 : 0);
+      writer.u8(options.traceProvenance === true ? 1 : 0);
       const data = Object.entries(options.data ?? {}).sort(([left], [right]) =>
         left < right ? -1 : left > right ? 1 : 0
       );
@@ -580,6 +675,7 @@ export class Mecojoni {
       const value: GenerationOutput = {
         text: formatted.text,
         ...structural,
+        provenance: finalizeFormattedProvenance(structural.provenance, formatted.text),
         formatterDiagnostics,
         message: {
           id: formatterRequest.messageId,
@@ -602,6 +698,52 @@ export class Mecojoni {
 
   private assertOwner(handle: OwnedHandle): void {
     if (handle.owner !== this) throw new Error("Mecojoni handle belongs to another WASM instance");
+  }
+
+  private exportStateSnapshot(operation: number, handle: OwnedHandle): MecoResult<Uint8Array> {
+    try {
+      this.assertOwner(handle);
+      const writer = request();
+      writer.u32(handle.handle);
+      const decoded = this.invoke(operation, writer.finish());
+      if (decoded.status !== 0) return decodeFailure(decoded);
+      expectKind(decoded, PAYLOAD_SNAPSHOT);
+      const snapshot = decoded.reader.bytes();
+      decoded.reader.finish();
+      return { ok: true, value: snapshot, diagnostics: [] };
+    } catch (error) {
+      return caughtFailure(error);
+    }
+  }
+
+  private importStateSnapshot<T extends OwnedHandle>(
+    operation: number,
+    snapshot: Uint8Array,
+    create: (handle: number) => T,
+  ): MecoResult<T> {
+    let decoded: DecodedResult | undefined;
+    try {
+      const writer = request();
+      writer.bytes(snapshot);
+      decoded = this.invoke(operation, writer.finish());
+      if (decoded.status !== 0) return decodeFailure(decoded);
+      expectKind(decoded, PAYLOAD_SNAPSHOT);
+      const canonical = decoded.reader.bytes();
+      decoded.reader.finish();
+      if (
+        canonical.length !== snapshot.length ||
+        canonical.some((byte, index) => byte !== snapshot[index])
+      ) {
+        throw new Error("restored snapshot bytes were not canonical");
+      }
+      if (decoded.valueHandle === 0) return localFailure("E_ABI_VALUE", "state handle is absent");
+      const handle = decoded.valueHandle;
+      decoded.valueHandle = 0;
+      return { ok: true, value: create(handle), diagnostics: [] };
+    } catch (error) {
+      if (decoded?.valueHandle) this.disposeHandle(decoded.valueHandle);
+      return caughtFailure(error);
+    }
   }
 
   private createStateHandle<T extends OwnedHandle>(
@@ -677,6 +819,23 @@ export class Mecojoni {
   }
 }
 
+function finalizeFormattedProvenance(
+  provenance: ProvenanceOutput[],
+  text: string,
+): ProvenanceOutput[] {
+  const full: OutputRange = {
+    startByte: 0n,
+    endByte: BigInt(encodeStrict(text).length),
+    startScalar: 0n,
+    endScalar: BigInt(Array.from(text).length),
+  };
+  return provenance.map((node) => {
+    const formattedAncestor = node.kind === "production" && node.output !== undefined &&
+      node.output.startScalar === node.output.endScalar;
+    return node.kind === "message" || formattedAncestor ? { ...node, output: full } : node;
+  });
+}
+
 function encodePackage(description: PackageDescription): Uint8Array {
   const writer = request();
   writer.string(description.rootId);
@@ -699,25 +858,93 @@ function encodePackage(description: PackageDescription): Uint8Array {
 function readTraces(reader: Reader): {
   bindings: BindingOutput[];
   selections: SelectionOutput[];
+  provenance: ProvenanceOutput[];
 } {
+  const bindings = Array.from({ length: reader.u32() }, () => ({
+    name: reader.string(),
+    emitted: decodeBoolean(reader.u8(), "binding emitted flag"),
+    value: reader.value(),
+  }));
+  const selections = Array.from({ length: reader.u32() }, () => ({
+    rule: reader.string(),
+    selectedProduction: reader.u32(),
+    selectedProductionId: reader.string(),
+    eligible: Array.from({ length: reader.u32() }, () => ({
+      production: reader.u32(),
+      productionId: reader.string(),
+      baseWeight: {
+        numerator: reader.i64(),
+        denominator: reader.u64(),
+      },
+      normalizedWeight: reader.u64(),
+    })),
+  }));
+  const kinds: ProvenanceKind[] = [
+    "production",
+    "authoredText",
+    "hostValue",
+    "boundValue",
+    "emittingCapture",
+    "binding",
+    "message",
+  ];
+  const provenance = Array.from({ length: reader.u32() }, (): ProvenanceOutput => {
+    const id = reader.u32();
+    const hasParent = reader.u8();
+    const parent = hasParent === 1 ? reader.u32() : undefined;
+    if (hasParent > 1) throw new Error("Invalid provenance parent flag");
+    const kind = kinds[reader.u8()];
+    if (kind === undefined) throw new Error("Invalid provenance kind");
+    const rule = reader.string();
+    const productionId = reader.string();
+    const sourceSpan = readSourceSpan(reader);
+    const hasOutput = reader.u8();
+    const output = hasOutput === 1
+      ? {
+        startByte: reader.u64(),
+        endByte: reader.u64(),
+        startScalar: reader.u64(),
+        endScalar: reader.u64(),
+      }
+      : undefined;
+    if (hasOutput > 1) throw new Error("Invalid provenance output flag");
+    const depth = reader.u32();
+    const hasName = reader.u8();
+    const name = hasName === 1 ? reader.string() : undefined;
+    if (hasName > 1) throw new Error("Invalid provenance name flag");
+    return { id, parent, kind, rule, productionId, sourceSpan, output, depth, name };
+  });
+  return { bindings, selections, provenance };
+}
+
+function readSourceSpan(reader: Reader): SourceSpan {
   return {
-    bindings: Array.from({ length: reader.u32() }, () => ({
-      name: reader.string(),
-      emitted: decodeBoolean(reader.u8(), "binding emitted flag"),
-      value: reader.value(),
-    })),
-    selections: Array.from({ length: reader.u32() }, () => ({
-      rule: reader.string(),
-      selectedProduction: reader.u32(),
-      eligible: Array.from({ length: reader.u32() }, () => ({
-        production: reader.u32(),
-        baseWeight: {
-          numerator: reader.i64(),
-          denominator: reader.u64(),
-        },
-        normalizedWeight: reader.u64(),
-      })),
-    })),
+    sourceId: reader.u32(),
+    start: { byte: reader.u64(), scalar: reader.u64() },
+    end: { byte: reader.u64(), scalar: reader.u64() },
+  };
+}
+
+function readReplayReceipt(reader: Reader): ReplayReceiptOutput {
+  return {
+    version: reader.u32(),
+    grammarHash: reader.u64(),
+    samplerVersion: reader.string(),
+    normalizerVersion: reader.string(),
+    tokenizerVersion: reader.string(),
+    preSessionHash: reader.u64(),
+    preSessionWords: reader.u64(),
+    preRepetitionHash: reader.u64(),
+    preRepetitionRevision: reader.u64(),
+    reservedWords: reader.u64(),
+    requestDigest: reader.u64(),
+    effectiveEntry: reader.string(),
+    winnerAttempt: reader.u32(),
+    derivationHash: reader.u64(),
+    finalTextHash: reader.u64(),
+    postSessionHash: reader.u64(),
+    postRepetitionHash: reader.u64(),
+    postRepetitionRevision: reader.u64(),
   };
 }
 
