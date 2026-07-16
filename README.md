@@ -572,6 +572,54 @@ means:
 `<-` is only a call-argument operator after `@rule` or `&message`; it is never a
 general assignment form.
 
+### Branching and persistent NPC memory
+
+Rule calls form a branching content graph. During one generation, Mecojoni follows
+the selected branch and any rules it calls, so a response can continue into a
+reusable sub-path:
+
+```meco
+# encounter
+- {npcPath is cautious} @cautious-encounter
+- {npcPath is trusted} @trusted-encounter
+
+# cautious-encounter
+- "Keep your voice down. "@cautious-decision
+
+# cautious-decision
+- I will show you the way.
+- We should wait for daylight.
+
+# trusted-encounter
+- "Good to see you again. "@trusted-decision
+
+# trusted-decision
+- Let us start with the old signal tower.
+- I saved something for you.
+```
+
+This traversal is local to that generation. Mecojoni does not mutate a character
+or story variable after returning a result. Persistent NPC memory belongs to the
+host application: store the character's state there, then provide it as a typed
+input on the next generation.
+
+```meco
+types:
+  NpcPath: [unmet, cautious, trusted]
+
+inputs:
+  npcPath: NpcPath
+```
+
+For example, the host can begin with `npcPath = unmet`, update its saved NPC record
+to `cautious` after a player action, and pass `npcPath = cautious` on the next call.
+Guards then select the appropriate branch. This keeps saves, quest logic, and
+multiplayer authority in the host while keeping the grammar deterministic for a
+given input and seed.
+
+`diverse/1` is separate from narrative memory: it remembers recent selections and
+text only to avoid repetition. It does not decide or persist an NPC's story path.
+
 ### Complete localized messages
 
 `&message` resolves a stable external message through the configured formatter.
