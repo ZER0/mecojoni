@@ -8,12 +8,14 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
+use core::cell::RefCell;
 
 use mecojoni_core::{
-    CompiledGrammar, DataBinding, Diagnostic, GeneratedContent, GenerationLimits,
-    GenerationRequest, LocaleRequest, MecoError, MessageArgument, MessageDefinition,
-    MessageManifest, PackageInput, PackageSource, Rational, ResolvedImport, SchemaType, Severity,
-    SourceFile, SourceId, Value, compile_package, compile_package_with_manifest,
+    CompiledGrammar, DataBinding, Diagnostic, DiverseGenerationRequest, GeneratedContent,
+    GenerationLimits, GenerationRequest, LocaleRequest, MecoError, MecoResult, MessageArgument,
+    MessageDefinition, MessageManifest, PackageInput, PackageSource, Rational, RepetitionStore,
+    ResolvedImport, SamplerSession, SchemaType, Severity, SourceFile, SourceId, Value,
+    compile_package, compile_package_with_manifest,
 };
 
 mod wire;
@@ -32,6 +34,9 @@ pub const OP_GENERATE_WEIGHTED: u32 = 3;
 pub const OP_GENERATE_TYPED: u32 = 4;
 pub const OP_COMPILE_WITH_MANIFEST: u32 = 5;
 pub const OP_GENERATE_STRUCTURAL: u32 = 6;
+pub const OP_REPETITION_CREATE: u32 = 7;
+pub const OP_SESSION_CREATE: u32 = 8;
+pub const OP_GENERATE_DIVERSE: u32 = 9;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_ERROR: u32 = 1;
@@ -42,6 +47,7 @@ const PAYLOAD_PACKAGE: u32 = 1;
 const PAYLOAD_COMPILE: u32 = 2;
 const PAYLOAD_GENERATE: u32 = 3;
 const PAYLOAD_STRUCTURAL: u32 = 4;
+const PAYLOAD_DIVERSE: u32 = 5;
 
 const MAX_MODULES: usize = 4_096;
 const MAX_IMPORTS_PER_MODULE: usize = 4_096;
@@ -68,12 +74,16 @@ enum HandleKind {
     Package,
     Grammar,
     Result,
+    Repetition,
+    Session,
 }
 
 enum HandleValue {
     Package(Box<PackageInput>),
     Grammar(Box<CompiledGrammar>),
     Result(ResultRecord),
+    Repetition(RefCell<RepetitionStore>),
+    Session(RefCell<SamplerSession>),
 }
 
 impl HandleValue {
@@ -82,6 +92,8 @@ impl HandleValue {
             Self::Package(_) => HandleKind::Package,
             Self::Grammar(_) => HandleKind::Grammar,
             Self::Result(_) => HandleKind::Result,
+            Self::Repetition(_) => HandleKind::Repetition,
+            Self::Session(_) => HandleKind::Session,
         }
     }
 }
@@ -199,7 +211,10 @@ impl State {
     fn result(&self, handle: u32) -> Option<&ResultRecord> {
         match self.get(handle)? {
             HandleValue::Result(result) => Some(result),
-            HandleValue::Package(_) | HandleValue::Grammar(_) => None,
+            HandleValue::Package(_)
+            | HandleValue::Grammar(_)
+            | HandleValue::Repetition(_)
+            | HandleValue::Session(_) => None,
         }
     }
 
@@ -238,6 +253,9 @@ fn dispatch(state: &mut State, operation: u32, input: &[u8]) -> u32 {
         OP_GENERATE_TYPED => generate_weighted(state, input, true),
         OP_COMPILE_WITH_MANIFEST => compile_with_manifest(state, input),
         OP_GENERATE_STRUCTURAL => generate_structural(state, input),
+        OP_REPETITION_CREATE => repetition_create(state, input),
+        OP_SESSION_CREATE => session_create(state, input),
+        OP_GENERATE_DIVERSE => generate_diverse(state, input),
         _ => state.add_error(AbiDiagnostic::new(
             "E_ABI_OPERATION",
             format!("unknown ABI operation {operation}"),
@@ -304,7 +322,7 @@ fn compile_with_manifest(state: &mut State, input: &[u8]) -> u32 {
 }
 
 fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
-    let request = match decode_generation_request(input, typed, false) {
+    let request = match decode_generation_request(input, typed, false, false) {
         Ok(request) => request,
         Err(diagnostic) => return state.add_error(diagnostic),
     };
@@ -341,7 +359,7 @@ fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
 }
 
 fn generate_structural(state: &mut State, input: &[u8]) -> u32 {
-    let request = match decode_generation_request(input, true, true) {
+    let request = match decode_generation_request(input, true, true, false) {
         Ok(request) => request,
         Err(diagnostic) => return state.add_error(diagnostic),
     };
@@ -387,6 +405,121 @@ fn generate_structural(state: &mut State, input: &[u8]) -> u32 {
     }
 }
 
+fn repetition_create(state: &mut State, input: &[u8]) -> u32 {
+    let decoder = match decoder(input) {
+        Ok(decoder) => decoder,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    if let Err(error) = decoder.finish() {
+        return state.add_error(wire_diagnostic(error));
+    }
+    state.add_value_result(
+        HandleValue::Repetition(RefCell::new(RepetitionStore::new_location())),
+        encode_empty_success(PAYLOAD_PACKAGE),
+    )
+}
+
+fn session_create(state: &mut State, input: &[u8]) -> u32 {
+    let mut decoder = match decoder(input) {
+        Ok(decoder) => decoder,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let seed = match decoder.u64() {
+        Ok(seed) => seed,
+        Err(error) => return state.add_error(wire_diagnostic(error)),
+    };
+    if let Err(error) = decoder.finish() {
+        return state.add_error(wire_diagnostic(error));
+    }
+    state.add_value_result(
+        HandleValue::Session(RefCell::new(SamplerSession::new(seed))),
+        encode_empty_success(PAYLOAD_PACKAGE),
+    )
+}
+
+fn generate_diverse(state: &mut State, input: &[u8]) -> u32 {
+    let request = match decode_generation_request(input, true, false, true) {
+        Ok(request) => request,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    let grammar = match state.get(request.grammar) {
+        Some(HandleValue::Grammar(grammar)) => grammar,
+        Some(value) => {
+            return state.add_error(wrong_kind(
+                request.grammar,
+                HandleKind::Grammar,
+                value.kind(),
+            ));
+        }
+        None => return state.add_error(stale_handle(request.grammar)),
+    };
+    let session_handle = request.session.expect("stateful decoder sets session");
+    let store_handle = request.repetition.expect("stateful decoder sets store");
+    let session = match state.get(session_handle) {
+        Some(HandleValue::Session(session)) => session,
+        Some(value) => {
+            return state.add_error(wrong_kind(
+                session_handle,
+                HandleKind::Session,
+                value.kind(),
+            ));
+        }
+        None => return state.add_error(stale_handle(session_handle)),
+    };
+    let store = match state.get(store_handle) {
+        Some(HandleValue::Repetition(store)) => store,
+        Some(value) => {
+            return state.add_error(wrong_kind(
+                store_handle,
+                HandleKind::Repetition,
+                value.kind(),
+            ));
+        }
+        None => return state.add_error(stale_handle(store_handle)),
+    };
+    let result = (|| -> MecoResult<Vec<u8>> {
+        let mut session = session.try_borrow_mut().map_err(|_| {
+            MecoError::new(Diagnostic::new(
+                mecojoni_core::DiagnosticCode::STATE_BUSY,
+                Severity::Error,
+                None,
+                "sampler session already has an active operation",
+            ))
+        })?;
+        let mut store = store.try_borrow_mut().map_err(|_| {
+            MecoError::new(Diagnostic::new(
+                mecojoni_core::DiagnosticCode::STATE_BUSY,
+                Severity::Error,
+                None,
+                "repetition store already has an active operation",
+            ))
+        })?;
+        session
+            .generate(
+                grammar,
+                &mut store,
+                &DiverseGenerationRequest {
+                    entry: request.entry.as_deref(),
+                    limits: request.limits,
+                    data: &request.data,
+                    trace_bindings: request.trace_bindings,
+                    trace_selections: request.trace_selections,
+                    cancelled: request.cancelled,
+                },
+            )
+            .map(|result| encode_diverse_success(&result))
+    })();
+    match result {
+        Ok(payload) => state.add_result(ResultRecord {
+            status: STATUS_SUCCESS,
+            value_handle: 0,
+            value_claimed: false,
+            payload,
+        }),
+        Err(error) => add_core_error(state, &error),
+    }
+}
+
 struct AbiGenerationRequest {
     grammar: u32,
     seed: u64,
@@ -397,6 +530,9 @@ struct AbiGenerationRequest {
     trace_selections: bool,
     requested_locale: Option<String>,
     fallback_locales: Vec<String>,
+    session: Option<u32>,
+    repetition: Option<u32>,
+    cancelled: bool,
 }
 
 fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
@@ -412,14 +548,22 @@ fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
     Ok(handle)
 }
 
+#[allow(clippy::too_many_lines)]
 fn decode_generation_request(
     input: &[u8],
     typed: bool,
     localized: bool,
+    stateful: bool,
 ) -> Result<AbiGenerationRequest, AbiDiagnostic> {
     let mut decoder = decoder(input)?;
     let grammar = decoder.u32().map_err(wire_diagnostic)?;
     let seed = decoder.u64().map_err(wire_diagnostic)?;
+    if stateful && seed != 0 {
+        return Err(AbiDiagnostic::new(
+            "E_ABI_WIRE_VALUE",
+            "stateful diverse request reserved seed must be zero",
+        ));
+    }
     let entry = decoder
         .optional_string(MAX_STRING_BYTES)
         .map_err(wire_diagnostic)?;
@@ -473,6 +617,25 @@ fn decode_generation_request(
     } else {
         (None, Vec::new())
     };
+    let (session, repetition, cancelled) = if stateful {
+        let state = (
+            Some(decoder.u32().map_err(wire_diagnostic)?),
+            Some(decoder.u32().map_err(wire_diagnostic)?),
+        );
+        let cancelled = match decoder.u8().map_err(wire_diagnostic)? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(AbiDiagnostic::new(
+                    "E_ABI_WIRE_VALUE",
+                    "cancellation flag must be 0 or 1",
+                ));
+            }
+        };
+        (state.0, state.1, cancelled)
+    } else {
+        (None, None, false)
+    };
     decoder.finish().map_err(wire_diagnostic)?;
     if grammar == 0 {
         return Err(AbiDiagnostic::new(
@@ -490,6 +653,9 @@ fn decode_generation_request(
         trace_selections,
         requested_locale,
         fallback_locales,
+        session,
+        repetition,
+        cancelled,
     })
 }
 
@@ -732,6 +898,22 @@ fn encode_structural_success(result: &mecojoni_core::StructuralGenerationResult)
     encoder.u32(result.expansions());
     encoder.u32(result.sampler_words());
     encode_traces(&mut encoder, result.bindings(), result.selections());
+    encoder.into_bytes()
+}
+
+fn encode_diverse_success(result: &mecojoni_core::DiverseResult) -> Vec<u8> {
+    let generation = result.generation();
+    let mut encoder = payload(PAYLOAD_DIVERSE);
+    encoder.string(generation.text());
+    encoder.string(generation.entry());
+    encoder.u32(generation.expansions());
+    encoder.u32(generation.sampler_words());
+    encode_traces(&mut encoder, generation.bindings(), generation.selections());
+    encoder.u32(result.attempts());
+    encoder.u32(result.winner_attempt());
+    encoder.u32(result.exact_repetitions());
+    encoder.u64(result.edge_repetitions());
+    encoder.u64(result.committed_revision());
     encoder.into_bytes()
 }
 
@@ -1003,9 +1185,10 @@ mod tests {
 
     use super::{
         ABI_VERSION, HandleKind, HandleValue, OP_COMPILE, OP_COMPILE_WITH_MANIFEST,
-        OP_GENERATE_STRUCTURAL, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE, PAYLOAD_ERROR,
-        PAYLOAD_GENERATE, PAYLOAD_STRUCTURAL, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION,
-        dispatch, meco_abi_version, meco_core_api_version,
+        OP_GENERATE_DIVERSE, OP_GENERATE_STRUCTURAL, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE,
+        OP_REPETITION_CREATE, OP_SESSION_CREATE, PAYLOAD_DIVERSE, PAYLOAD_ERROR, PAYLOAD_GENERATE,
+        PAYLOAD_STRUCTURAL, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION, dispatch,
+        meco_abi_version, meco_core_api_version,
     };
     use crate::wire::{Decoder, Encoder};
 
@@ -1085,6 +1268,26 @@ mod tests {
         encoder.u64(1);
         encoder.string("en");
         encoder.u32(0);
+        encoder.into_bytes()
+    }
+
+    fn diverse_request(grammar: u32, session: u32, repetition: u32) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder.u32(WIRE_VERSION);
+        encoder.u32(grammar);
+        encoder.u64(0);
+        encoder.u8(0);
+        encoder.u32(80);
+        encoder.u32(2_000);
+        encoder.u32(16_384);
+        encoder.u32(65_536);
+        encoder.u32(8_192);
+        encoder.u8(0);
+        encoder.u8(0);
+        encoder.u32(0);
+        encoder.u32(session);
+        encoder.u32(repetition);
+        encoder.u8(0);
         encoder.into_bytes()
     }
 
@@ -1197,6 +1400,45 @@ mod tests {
         assert_eq!(decoder.u64(), Ok(1));
         assert_eq!(decoder.string(64), Ok("en".to_string()));
         assert_eq!(decoder.u32(), Ok(0));
+    }
+
+    #[test]
+    fn diverse_state_handles_generate_one_transactional_result() {
+        let mut state = State::new();
+        let package_result = dispatch(&mut state, OP_PACKAGE_CREATE, &package_request());
+        let package = state
+            .claim_result_value(package_result)
+            .expect("package handle");
+        let compile_result = dispatch(&mut state, OP_COMPILE, &handle_request(package));
+        let grammar = state
+            .claim_result_value(compile_result)
+            .expect("grammar handle");
+        let repetition_result = dispatch(
+            &mut state,
+            OP_REPETITION_CREATE,
+            &WIRE_VERSION.to_le_bytes(),
+        );
+        let repetition = state
+            .claim_result_value(repetition_result)
+            .expect("repetition handle");
+        let mut session_request = Encoder::new();
+        session_request.u32(WIRE_VERSION);
+        session_request.u64(0);
+        let session_result = dispatch(&mut state, OP_SESSION_CREATE, &session_request.into_bytes());
+        let session = state
+            .claim_result_value(session_result)
+            .expect("session handle");
+        let generated = dispatch(
+            &mut state,
+            OP_GENERATE_DIVERSE,
+            &diverse_request(grammar, session, repetition),
+        );
+        let record = state.result(generated).expect("diverse result");
+        assert_eq!(record.status, STATUS_SUCCESS);
+        let mut decoder = Decoder::new(&record.payload);
+        assert_eq!(decoder.u32(), Ok(WIRE_VERSION));
+        assert_eq!(decoder.u32(), Ok(PAYLOAD_DIVERSE));
+        assert_eq!(decoder.string(64), Ok("hello".to_string()));
     }
 
     #[test]

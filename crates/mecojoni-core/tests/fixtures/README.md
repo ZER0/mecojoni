@@ -17,6 +17,10 @@ Milestone 6 adds a typed message manifest, English and Polish-style plural
 catalogs, explicit fallback coverage, missing-ID/schema-drift failures, and a
 filesystem-backed synchronous test formatter. Catalog syntax is deliberately a
 tiny fixture protocol, not a production Mecojoni localization format.
+Milestone 7 adds a real `sampler: diverse/1` package and one checked Rust/Deno/
+Chrome sequence. It fixes candidate reservation, hard-gap behavior, winner score,
+revision counts, rollback, cancellation, nullable/recursive exemptions, and the
+published exact/edge eviction boundaries.
 
 Tests must read these artifacts through `std::fs`. The production core receives
 owned source modules from the host and never performs filesystem I/O.

@@ -4,12 +4,16 @@ const OP_COMPILE = 2;
 const OP_GENERATE_TYPED = 4;
 const OP_COMPILE_WITH_MANIFEST = 5;
 const OP_GENERATE_STRUCTURAL = 6;
+const OP_REPETITION_CREATE = 7;
+const OP_SESSION_CREATE = 8;
+const OP_GENERATE_DIVERSE = 9;
 
 const PAYLOAD_ERROR = 0;
 const PAYLOAD_PACKAGE = 1;
 const PAYLOAD_COMPILE = 2;
 const PAYLOAD_GENERATE = 3;
 const PAYLOAD_STRUCTURAL = 4;
+const PAYLOAD_DIVERSE = 5;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -137,6 +141,14 @@ export interface GenerationOutput {
   message?: MessageOutput;
 }
 
+export interface DiverseOutput extends GenerationOutput {
+  attempts: number;
+  winnerAttempt: number;
+  exactRepetitions: number;
+  edgeRepetitions: bigint;
+  committedRevision: bigint;
+}
+
 export type MecoValue =
   | { kind: "text"; value: string }
   | { kind: "number"; numerator: bigint; denominator: bigint }
@@ -179,6 +191,15 @@ export interface GenerationOptions {
   locale?: string;
   fallbackLocales?: readonly string[];
   formatter?: MecoFormatter;
+}
+
+export interface DiverseOptions {
+  entry?: string;
+  limits?: Partial<GenerationLimitOptions>;
+  data?: Readonly<Record<string, MecoValue>>;
+  traceBindings?: boolean;
+  traceSelections?: boolean;
+  cancelled?: boolean;
 }
 
 const DEFAULT_LIMITS: GenerationLimitOptions = {
@@ -231,6 +252,18 @@ export class CompiledGrammar extends OwnedHandle {
     super(owner, handle);
     this.entries = Object.freeze([...summary.entries]);
     this.defaultEntry = summary.defaultEntry;
+  }
+}
+
+export class RepetitionStore extends OwnedHandle {
+  constructor(owner: Mecojoni, handle: number) {
+    super(owner, handle);
+  }
+}
+
+export class SamplerSession extends OwnedHandle {
+  constructor(owner: Mecojoni, handle: number) {
+    super(owner, handle);
   }
 }
 
@@ -348,6 +381,86 @@ export class Mecojoni {
       return this.compile(created.value, manifest);
     } finally {
       created.value.dispose();
+    }
+  }
+
+  createRepetitionStore(): MecoResult<RepetitionStore> {
+    return this.createStateHandle(
+      OP_REPETITION_CREATE,
+      request().finish(),
+      (handle) => new RepetitionStore(this, handle),
+    );
+  }
+
+  createSession(seed: bigint): MecoResult<SamplerSession> {
+    try {
+      validateSeed(seed);
+      const writer = request();
+      writer.u64(seed);
+      return this.createStateHandle(
+        OP_SESSION_CREATE,
+        writer.finish(),
+        (handle) => new SamplerSession(this, handle),
+      );
+    } catch (error) {
+      return caughtFailure(error);
+    }
+  }
+
+  generateDiverse(
+    grammar: CompiledGrammar,
+    session: SamplerSession,
+    repetition: RepetitionStore,
+    options: DiverseOptions,
+  ): MecoResult<DiverseOutput> {
+    try {
+      this.assertOwner(grammar);
+      this.assertOwner(session);
+      this.assertOwner(repetition);
+      const limits = { ...DEFAULT_LIMITS, ...options.limits };
+      for (const [name, value] of Object.entries(limits)) validateU32(value, name);
+      const writer = request();
+      writer.u32(grammar.handle);
+      writer.u64(0n); // Reserved in meco-wire/1; session state is the sole random source.
+      writer.optionalString(options.entry);
+      writer.u32(limits.maxDepth);
+      writer.u32(limits.maxExpansions);
+      writer.u32(limits.maxOutputScalars);
+      writer.u32(limits.maxOutputBytes);
+      writer.u32(limits.maxSamplerWords);
+      writer.u8(options.traceBindings === true ? 1 : 0);
+      writer.u8(options.traceSelections === true ? 1 : 0);
+      const data = Object.entries(options.data ?? {}).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0
+      );
+      writer.u32(data.length);
+      for (const [name, value] of data) {
+        writer.string(name);
+        writer.value(value);
+      }
+      writer.u32(session.handle);
+      writer.u32(repetition.handle);
+      writer.u8(options.cancelled === true ? 1 : 0);
+      const decoded = this.invoke(OP_GENERATE_DIVERSE, writer.finish());
+      if (decoded.status !== 0) return decodeFailure(decoded);
+      expectKind(decoded, PAYLOAD_DIVERSE);
+      const value: DiverseOutput = {
+        text: decoded.reader.string(),
+        entry: decoded.reader.string(),
+        expansions: decoded.reader.u32(),
+        samplerWords: decoded.reader.u32(),
+        ...readTraces(decoded.reader),
+        formatterDiagnostics: [],
+        attempts: decoded.reader.u32(),
+        winnerAttempt: decoded.reader.u32(),
+        exactRepetitions: decoded.reader.u32(),
+        edgeRepetitions: decoded.reader.u64(),
+        committedRevision: decoded.reader.u64(),
+      };
+      decoded.reader.finish();
+      return { ok: true, value, diagnostics: [] };
+    } catch (error) {
+      return caughtFailure(error);
     }
   }
 
@@ -489,6 +602,27 @@ export class Mecojoni {
 
   private assertOwner(handle: OwnedHandle): void {
     if (handle.owner !== this) throw new Error("Mecojoni handle belongs to another WASM instance");
+  }
+
+  private createStateHandle<T extends OwnedHandle>(
+    operation: number,
+    input: Uint8Array,
+    create: (handle: number) => T,
+  ): MecoResult<T> {
+    let decoded: DecodedResult | undefined;
+    try {
+      decoded = this.invoke(operation, input);
+      if (decoded.status !== 0) return decodeFailure(decoded);
+      expectKind(decoded, PAYLOAD_PACKAGE);
+      decoded.reader.finish();
+      if (decoded.valueHandle === 0) return localFailure("E_ABI_VALUE", "state handle is absent");
+      const handle = decoded.valueHandle;
+      decoded.valueHandle = 0;
+      return { ok: true, value: create(handle), diagnostics: [] };
+    } catch (error) {
+      if (decoded?.valueHandle) this.disposeHandle(decoded.valueHandle);
+      return caughtFailure(error);
+    }
   }
 
   private invoke(operation: number, input: Uint8Array): DecodedResult {

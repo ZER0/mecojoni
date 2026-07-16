@@ -4,8 +4,9 @@
 > exists. The portable workspace, complete recovering source parser, immutable
 > package compiler, iterative `weighted/1` generator, deterministic primitives,
 > typed request/guard/binding runtime, complete-message formatter boundary,
-> package boundary, handwritten WASM ABI, Deno/browser wrapper, and initial audit
-> are implemented; completion is tracked in `ROADMAP.md`.
+> transactional `diverse/1` sessions and histories, package boundary, handwritten
+> WASM ABI, Deno/browser wrapper, and initial audit are implemented; completion is
+> tracked in `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -793,6 +794,14 @@ history. These values, the scoring mode, and the normalizer/tokenizer versions a
 part of `location/1` and therefore of every replay receipt. A changed value requires
 a new profile or sampler version, never a silent tuning change.
 
+The first executable estimate is `1 + sum(direct child production counts)` over
+body calls and silent bindings, using saturating `u64` arithmetic. This deliberately
+bounded one-level estimate avoids recursive fixed points; changing it requires a
+new sampler version. Candidate ranking is lexicographic: lower normalized exact-
+output history count, then lower summed edge-fragment history counts, then lower
+attempt index. Thus surface history chooses among complete viable candidates but
+never weakens structural eligibility.
+
 For ordinary structural rules, `diverse/1` defines `minimumGap = g` as follows.
 Let `E` be guard-eligible productions whose static or evaluated dynamic base weight
 is positive, and `C` those selected within the previous `g` committed selections of
@@ -1004,8 +1013,10 @@ identity and version become part of the replay contract. Unqualified
 
 ### Bounded histories and memory ownership
 
-Exact and fragment histories use ring buffers plus counted maps, providing `O(1)`
-insertion and eviction. They support both entry-count and byte-budget limits.
+Exact and fragment histories use ring buffers plus a dependency-free FNV-1a open-
+addressed counted map, providing expected `O(1)` insertion, lookup, and eviction.
+They support both entry-count and byte-budget limits. The edge window counts
+returned phrases; evicting one phrase removes all of its retained fragments.
 
 The logical byte budget is defined over canonical UTF-8 keys and retained payload,
 not JavaScript heap overhead. Heap/RSS is measured separately on named target

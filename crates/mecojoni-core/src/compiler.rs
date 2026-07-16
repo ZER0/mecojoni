@@ -7,13 +7,15 @@ use alloc::{
     vec::Vec,
 };
 
+use crate::diverse::DiverseCandidateState;
 use crate::{
     ArgumentSyntax, BindingTrace, BodyPartSyntax, BodySyntax, ClauseSyntax, DataBinding,
     Diagnostic, DiagnosticCode, EligibleWeightTrace, Formatter, FormatterRequest, GuardExpression,
     GuardValue, InputDefinition, LocaleRequest, MecoError, MecoResult, MessageDefinition,
     MessageManifest, MessageTrace, ModuleSyntax, PackageInput, PackageManifest, Rational,
     SchemaType, SelectionTrace, Severity, Span, SplitMix64, Value, ValueSyntax, WeightExpression,
-    WeightSyntax, parse_module, validate_package_input,
+    WeightSyntax, diversity_factor_16_16, location_cooldown_multiplier, parse_module,
+    validate_package_input,
 };
 
 /// Compatibility identifier for independent exact weighted selection.
@@ -264,6 +266,7 @@ struct CompiledProduction {
     guard: Option<CompiledGuard>,
     bindings: Vec<CompiledBinding>,
     parts: Vec<CompiledPart>,
+    diversity_factor_16_16: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -358,6 +361,30 @@ impl CompiledGrammar {
             .map(|rule| rule.analysis)
     }
 
+    pub(crate) fn generate_diverse_candidate(
+        &self,
+        request: &GenerationRequest<'_>,
+        state: &mut DiverseCandidateState<'_>,
+    ) -> MecoResult<GenerationResult> {
+        let structural = self.generate_weighted_structural_internal(request, None, Some(state))?;
+        let GeneratedContent::Text(text) = structural.content else {
+            return Err(runtime_error(
+                DiagnosticCode::FORMATTER_REQUIRED,
+                "diverse complete-message generation requires a formatter-aware session",
+            ));
+        };
+        Ok(GenerationResult {
+            text,
+            entry: structural.entry,
+            expansions: structural.expansions,
+            sampler_words: structural.sampler_words,
+            bindings: structural.bindings,
+            selections: structural.selections,
+            formatter_diagnostics: Vec::new(),
+            message: None,
+        })
+    }
+
     /// Generates one exact independent weighted derivation without recursion on
     /// the native call stack.
     ///
@@ -409,6 +436,16 @@ impl CompiledGrammar {
         &self,
         request: &GenerationRequest<'_>,
         locale: Option<LocaleRequest<'_>>,
+    ) -> MecoResult<StructuralGenerationResult> {
+        self.generate_weighted_structural_internal(request, locale, None)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn generate_weighted_structural_internal(
+        &self,
+        request: &GenerationRequest<'_>,
+        locale: Option<LocaleRequest<'_>>,
+        mut diversity: Option<&mut DiverseCandidateState<'_>>,
     ) -> MecoResult<StructuralGenerationResult> {
         let (entry_name, entry_rule) = self.resolve_entry(request.entry)?;
         let inputs = self.validate_request_data(request.data)?;
@@ -653,7 +690,11 @@ impl CompiledGrammar {
                     }
                     let frame = frames.len();
                     frames.push(RuntimeFrame { values: arguments });
-                    let weighted = eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
+                    let mut weighted =
+                        eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
+                    if let Some(state) = diversity.as_deref_mut() {
+                        weighted = diverse_eligible_weights(compiled_rule, weighted, state)?;
+                    }
                     let total = weighted
                         .iter()
                         .try_fold(0_u64, |sum, weight| sum.checked_add(weight.normalized))
@@ -674,6 +715,9 @@ impl CompiledGrammar {
                             )
                         })?;
                     let production = select_eligible_production(&weighted, choice);
+                    if let Some(state) = diversity.as_deref_mut() {
+                        state.record(&compiled_rule.name, production);
+                    }
                     if request.trace_selections {
                         selection_trace.push(SelectionTrace::new(
                             compiled_rule.name.clone(),
@@ -1063,6 +1107,7 @@ pub fn compile_package_with_manifest(
                     guard,
                     bindings,
                     parts,
+                    diversity_factor_16_16: 1 << 16,
                 });
             }
             validate_static_weight_budget(rule.span, &productions)?;
@@ -1101,6 +1146,7 @@ pub fn compile_package_with_manifest(
     }
     validate_message_effects(&mut rules)?;
     analyze_graph(&mut rules, &entries)?;
+    prepare_diversity_metadata(&mut rules);
     let warnings = recursion_warnings(&rules);
     Ok(CompiledGrammar {
         rules,
@@ -2422,6 +2468,91 @@ fn eligible_weights(
             normalized,
         })
         .collect())
+}
+
+fn diverse_eligible_weights(
+    rule: &CompiledRule,
+    mut eligible: Vec<EligibleProduction>,
+    state: &DiverseCandidateState<'_>,
+) -> MecoResult<Vec<EligibleProduction>> {
+    if rule.analysis.nullable || rule.analysis.recursive {
+        return Ok(eligible);
+    }
+    let profile = crate::LocationProfile::V1;
+    let recent = state.recent(&rule.name);
+    let gap = usize::try_from(profile.hard_minimum_gap).unwrap_or(usize::MAX);
+    let cooled = recent.iter().rev().take(gap).copied().collect::<Vec<_>>();
+    let available = eligible
+        .iter()
+        .filter(|candidate| {
+            !cooled.contains(&u32::try_from(candidate.production).unwrap_or(u32::MAX))
+        })
+        .map(|candidate| candidate.production)
+        .collect::<Vec<_>>();
+    if available.is_empty() {
+        let relaxed = eligible
+            .iter()
+            .max_by_key(|candidate| {
+                (
+                    state
+                        .selection_age(&rule.name, candidate.production)
+                        .unwrap_or(u32::MAX),
+                    core::cmp::Reverse(candidate.production),
+                )
+            })
+            .map(|candidate| candidate.production)
+            .expect("eligible candidates are nonempty");
+        eligible.retain(|candidate| candidate.production == relaxed);
+    } else {
+        eligible.retain(|candidate| available.contains(&candidate.production));
+    }
+
+    let mut effective = Vec::with_capacity(eligible.len());
+    for candidate in &eligible {
+        let production = &rule.productions[candidate.production];
+        let diversity = Rational::new(i64::from(production.diversity_factor_16_16), 1 << 16)
+            .map_err(|_| weight_runtime_overflow("diversity factor exceeds rational budget"))?;
+        let cooldown = state
+            .selection_age(&rule.name, candidate.production)
+            .map_or(Ok(Rational::ONE), location_cooldown_multiplier)
+            .map_err(|_| weight_runtime_overflow("cooldown factor exceeds rational budget"))?;
+        effective.push(
+            candidate
+                .base
+                .checked_mul(diversity)
+                .and_then(|value| value.checked_mul(cooldown))
+                .map_err(|_| weight_runtime_overflow("diverse effective weight overflowed"))?,
+        );
+    }
+    let normalized = normalize_rationals(&effective, None)?;
+    for (candidate, weight) in eligible.iter_mut().zip(normalized) {
+        candidate.normalized = weight;
+    }
+    Ok(eligible)
+}
+
+fn prepare_diversity_metadata(rules: &mut [CompiledRule]) {
+    let production_counts = rules
+        .iter()
+        .map(|rule| u64::try_from(rule.productions.len()).unwrap_or(u64::MAX))
+        .collect::<Vec<_>>();
+    for rule in rules {
+        for production in &mut rule.productions {
+            let descendants = production
+                .bindings
+                .iter()
+                .map(|binding| production_counts[binding.rule])
+                .chain(
+                    production
+                        .parts
+                        .iter()
+                        .filter_map(part_rule)
+                        .map(|child| production_counts[child]),
+                )
+                .fold(1_u64, u64::saturating_add);
+            production.diversity_factor_16_16 = diversity_factor_16_16(descendants);
+        }
+    }
 }
 
 fn evaluate_weight(

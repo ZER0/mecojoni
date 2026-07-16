@@ -168,6 +168,9 @@ are rejected, and trailing bytes are errors.
 | typed weighted generate | 4 | operation-3 fields plus trace flags and typed request-value map | text/entry/work-counter, binding-trace, and selection-trace payload |
 | compile with message manifest | 5 | package handle plus message count; each message has ID and ordered named schema types | grammar handle plus entries/default/warnings payload |
 | structural typed generate | 6 | operation-4 fields plus requested locale and ordered fallback strings | ordinary text or one typed formatter request, then entry/work counters and traces |
+| repetition store create | 7 | no fields | `location/1` repetition-store handle |
+| sampler session create | 8 | `u64` seed | `diverse/1` sampler-session handle |
+| diverse generate | 9 | operation-4 fields with reserved seed zero, followed by session/repetition handles and cancellation flag | text/traces plus attempts, winner score, and committed revision |
 
 Generation limits are depth, expansions, output Unicode scalars, output UTF-8
 bytes, and sampler words in that order. A `u64` is always little-endian and the
@@ -245,6 +248,12 @@ only after the WASM call has returned, validates the formatter result with the
 same locale/work/provenance/output rules, and exposes message provenance plus
 successful formatter diagnostics. A promise-like callback result is rejected;
 applications preload catalogs before generation.
+
+Operations 7–9 keep grammar, PRNG ownership, and repetition history distinct.
+Operation 9 rejects wrong, stale, or already borrowed state handles, reserves the
+fixed candidate substreams, and returns only after winner-only commit. The
+TypeScript `generateDiverse` options intentionally contain no seed; the reserved
+wire field is zero in ABI 1 and the session is the sole random source.
 
 ## CLI streams and statuses (`cli/1`)
 

@@ -49,6 +49,18 @@ reported work units, invalid replay provenance, and final scalar/UTF-8 output-li
 the whole request without partial text. `GenerationOutput.message` retains coarse message and locale
 provenance; `formatterDiagnostics` retains successful formatter warnings.
 
+Stateful diversity uses two separately owned handles and no per-call seed:
+
+```ts
+const session = meco.createSession(42n);
+const repetition = meco.createRepetitionStore();
+const result = meco.generateDiverse(grammar.value, session.value, repetition.value, {});
+```
+
+Dispose the grammar, session, and repetition store in `finally`. A successful `generateDiverse`
+reserves the versioned 12-attempt parent stream and reports the winner, exact/edge repeat score, and
+committed store revision. Failed requests do not advance either state handle.
+
 Build and run the normative Deno integration suite from the repository root:
 
 ```sh

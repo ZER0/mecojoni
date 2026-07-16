@@ -187,19 +187,19 @@ diagnostics.
 
 Rebuild repetition resistance with explicit ownership and rollback.
 
-- [ ] Implement versioned `diverse/1` semantics over documented base-weight
+- [x] Implement versioned `diverse/1` semantics over documented base-weight
   priors.
-- [ ] Separate immutable grammar, sampler session, and repetition store.
-- [ ] Implement structural cooldown and bounded diversity factors.
-- [ ] Generate candidate-local state deltas and commit only the winner.
-- [ ] Add exact-output and opening/ending novelty histories with bounded storage
+- [x] Separate immutable grammar, sampler session, and repetition store.
+- [x] Implement structural cooldown and bounded diversity factors.
+- [x] Generate candidate-local state deltas and commit only the winner.
+- [x] Add exact-output and opening/ending novelty histories with bounded storage
   and constant-time eviction.
-- [ ] Preserve recursion and nullable-rule probability contracts.
-- [ ] Define deterministic candidate work and PRNG consumption.
-- [ ] Reject overlapping mutation of one ordered session/store.
-- [ ] Add transactional rollback, cooldown, eviction, and deterministic replay
+- [x] Preserve recursion and nullable-rule probability contracts.
+- [x] Define deterministic candidate work and PRNG consumption.
+- [x] Reject overlapping mutation of one ordered session/store.
+- [x] Add transactional rollback, cooldown, eviction, and deterministic replay
   integration tests.
-- [ ] Add golden tests for every `location/1` setting, including candidate count,
+- [x] Add golden tests for every `location/1` setting, including candidate count,
   cooldown relaxation, fragment windows, exact-history eviction, and nullable or
   recursive exemptions.
 

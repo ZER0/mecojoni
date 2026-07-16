@@ -7,6 +7,7 @@ mod ast;
 mod audit;
 mod compiler;
 mod diagnostic;
+mod diverse;
 mod error;
 mod formatter;
 mod front_matter;
@@ -33,6 +34,10 @@ pub use compiler::{
     compile_package_with_manifest,
 };
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
+pub use diverse::{
+    DIVERSE_SAMPLER_VERSION, DiverseGenerationRequest, DiverseResult, RepetitionStore,
+    SamplerSession,
+};
 pub use error::{MecoError, MecoResult};
 pub use formatter::{
     Formatter, FormatterRequest, FormatterResult, InputDefinition, LocaleRequest, MessageArgument,

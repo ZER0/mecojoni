@@ -94,6 +94,23 @@ async function milestone6Package(): Promise<PackageDescription> {
   };
 }
 
+async function milestone7Package(): Promise<PackageDescription> {
+  const fixture = new URL(
+    "../crates/mecojoni-core/tests/fixtures/packages/milestone7/root.meco.md",
+    import.meta.url,
+  );
+  return {
+    rootId: "root",
+    modules: [{
+      canonicalId: "root",
+      sourceId: 0,
+      sourceName: "root.meco.md",
+      source: await Deno.readTextFile(fixture),
+      resolvedImports: [],
+    }],
+  };
+}
+
 const milestone6Manifest: MessageManifest = {
   messages: [{
     id: "arrival",
@@ -343,6 +360,58 @@ Deno.test("Deno reports message manifest drift before invoking a formatter", asy
   });
   assert(!drifted.ok, "schema drift unexpectedly compiled");
   assertEquals(drifted.diagnostics[0]?.code, "E_MESSAGE_ARGUMENT");
+  assertEquals(meco.liveHandleCount, 0);
+});
+
+Deno.test("Deno diverse sessions match the transactional Rust sequence", async () => {
+  const meco = await instantiate();
+  const compiled = meco.compilePackage(await milestone7Package());
+  const session = meco.createSession(0n);
+  const repetition = meco.createRepetitionStore();
+  assert(compiled.ok, compiled.ok ? "" : compiled.error.message);
+  assert(session.ok, session.ok ? "" : session.error.message);
+  assert(repetition.ok, repetition.ok ? "" : repetition.error.message);
+  try {
+    const outputs: string[] = [];
+    let previous: string | undefined;
+    for (let call = 0; call < 16; call++) {
+      const generated = meco.generateDiverse(
+        compiled.value,
+        session.value,
+        repetition.value,
+        { traceSelections: true },
+      );
+      assert(generated.ok, generated.ok ? "" : generated.error.message);
+      assert(generated.value.text !== previous, `hard gap failed at ${call}`);
+      previous = generated.value.text;
+      outputs.push(
+        `${call}|${generated.value.text}|${generated.value.winnerAttempt}|${generated.value.exactRepetitions}|${generated.value.edgeRepetitions}`,
+      );
+      assert(
+        generated.value.committedRevision === BigInt(call + 1),
+        `revision mismatch at ${call}`,
+      );
+    }
+    const expected = await Deno.readTextFile(
+      new URL(
+        "../crates/mecojoni-core/tests/fixtures/expected/milestone7-sequence-v1.outputs",
+        import.meta.url,
+      ),
+    );
+    assertEquals(outputs.join("\n"), expected.trimEnd());
+    const cancelled = meco.generateDiverse(compiled.value, session.value, repetition.value, {
+      cancelled: true,
+    });
+    assert(!cancelled.ok, "cancelled diverse call unexpectedly succeeded");
+    assertEquals(cancelled.diagnostics[0]?.code, "E_CANCELLED");
+    const resumed = meco.generateDiverse(compiled.value, session.value, repetition.value, {});
+    assert(resumed.ok, resumed.ok ? "" : resumed.error.message);
+    assert(resumed.value.committedRevision === 17n, "cancelled call changed the revision");
+  } finally {
+    compiled.value.dispose();
+    session.value.dispose();
+    repetition.value.dispose();
+  }
   assertEquals(meco.liveHandleCount, 0);
 });
 

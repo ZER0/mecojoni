@@ -1,11 +1,12 @@
 use std::{fs, path::PathBuf};
 
 use mecojoni_core::{
-    ArgumentSyntax, BlockChomp, BodyPartSyntax, BodySyntax, ClauseSyntax, CompositionProfile,
-    DataBinding, Diagnostic, DiagnosticCode, Formatter, FormatterRequest, FormatterResult,
-    GenerationLimits, GenerationRequest, LocaleRequest, LocationProfile, MecoError, MecoResult,
-    MessageArgument, MessageDefinition, MessageManifest, PackageInput, PackageSource, Rational,
-    ResolvedImport, ResourceProfile, SchemaType, Severity, SourceFile, SourceId, SplitMix64, Value,
+    ArgumentSyntax, BlockChomp, BodyPartSyntax, BodySyntax, ClauseSyntax, CompiledGrammar,
+    CompositionProfile, DataBinding, Diagnostic, DiagnosticCode, DiverseGenerationRequest,
+    Formatter, FormatterRequest, FormatterResult, GenerationLimits, GenerationRequest,
+    LocaleRequest, LocationProfile, MecoError, MecoResult, MessageArgument, MessageDefinition,
+    MessageManifest, PackageInput, PackageSource, Rational, RepetitionStore, ResolvedImport,
+    ResourceProfile, SamplerSession, SchemaType, Severity, SourceFile, SourceId, SplitMix64, Value,
     ValueSyntax, WeightSyntax, audit_composition, compile_package, compile_package_with_manifest,
     diversity_factor_16_16, location_cooldown_multiplier, parse_front_matter, parse_module,
     validate_package_input,
@@ -91,6 +92,22 @@ fn milestone6_manifest(directory: &std::path::Path) -> MessageManifest {
         })
         .collect();
     MessageManifest { messages }
+}
+
+fn single_file_package(relative: &str) -> PackageInput {
+    let path = fixture_path(relative);
+    PackageInput {
+        root_id: "root".to_string(),
+        modules: vec![PackageSource {
+            canonical_id: "root".to_string(),
+            source: SourceFile::new(
+                SourceId::new(0),
+                path.display().to_string(),
+                fs::read_to_string(path).expect("read single-file package"),
+            ),
+            resolved_imports: vec![],
+        }],
+    }
 }
 
 struct FixtureFormatter {
@@ -1150,5 +1167,130 @@ fn milestone6_invalid_files_report_missing_messages_and_schema_drift() {
         let error = compile_package_with_manifest(&package, &manifest)
             .expect_err("invalid message fixture fails");
         assert_eq!(error.diagnostics()[0].code(), *code, "{name}");
+    }
+}
+
+#[test]
+fn milestone7_diverse_session_is_deterministic_transactional_and_gap_safe() {
+    let grammar = compile_package(&single_file_package("packages/milestone7/root.meco.md"))
+        .expect("Milestone 7 package compiles");
+    let mut session = SamplerSession::new(0);
+    let mut store = RepetitionStore::new_location();
+    assert_milestone7_sequence(&grammar, &mut session, &mut store);
+    assert_milestone7_failures_roll_back(&grammar, &mut session, &mut store);
+    assert_milestone7_exempt_rules_generate(&grammar);
+}
+
+fn assert_milestone7_sequence(
+    grammar: &CompiledGrammar,
+    session: &mut SamplerSession,
+    store: &mut RepetitionStore,
+) {
+    let mut outputs = Vec::new();
+    let mut previous = None;
+    for call in 0..16_u32 {
+        let result = session
+            .generate(
+                grammar,
+                store,
+                &DiverseGenerationRequest {
+                    trace_selections: true,
+                    ..DiverseGenerationRequest::default()
+                },
+            )
+            .expect("diverse call succeeds");
+        let text = result.generation().text();
+        assert_ne!(
+            previous.as_deref(),
+            Some(text),
+            "hard gap failed at call {call}"
+        );
+        previous = Some(text.to_string());
+        assert_eq!(result.attempts(), 12);
+        assert_eq!(result.committed_revision(), u64::from(call + 1));
+        assert_eq!(session.random_words(), u64::from(call + 1) * 12);
+        outputs.push(format!(
+            "{call}|{text}|{}|{}|{}",
+            result.winner_attempt(),
+            result.exact_repetitions(),
+            result.edge_repetitions()
+        ));
+    }
+    let actual = outputs.join("\n");
+    let expected = fs::read_to_string(fixture_path("expected/milestone7-sequence-v1.outputs"))
+        .expect("read Milestone 7 sequence");
+    assert_eq!(actual, expected.trim_end());
+}
+
+fn assert_milestone7_failures_roll_back(
+    grammar: &CompiledGrammar,
+    session: &mut SamplerSession,
+    store: &mut RepetitionStore,
+) {
+    let before_words = session.random_words();
+    let before_revision = store.revision();
+    let failure = session
+        .generate(
+            grammar,
+            store,
+            &DiverseGenerationRequest {
+                entry: Some("not.public"),
+                ..DiverseGenerationRequest::default()
+            },
+        )
+        .expect_err("invalid request fails");
+    assert_eq!(failure.diagnostics()[0].code(), DiagnosticCode::NO_ENTRY);
+    assert_eq!(session.random_words(), before_words);
+    assert_eq!(store.revision(), before_revision);
+    let over_budget = session
+        .generate(
+            grammar,
+            store,
+            &DiverseGenerationRequest {
+                limits: GenerationLimits {
+                    max_output_scalars: 1,
+                    ..GenerationLimits::default()
+                },
+                ..DiverseGenerationRequest::default()
+            },
+        )
+        .expect_err("all over-budget candidates fail");
+    assert_eq!(
+        over_budget.diagnostics()[0].code(),
+        DiagnosticCode::LIMIT_OUTPUT
+    );
+    assert_eq!(session.random_words(), before_words);
+    assert_eq!(store.revision(), before_revision);
+    let cancelled = session
+        .generate(
+            grammar,
+            store,
+            &DiverseGenerationRequest {
+                cancelled: true,
+                ..DiverseGenerationRequest::default()
+            },
+        )
+        .expect_err("cancelled request fails");
+    assert_eq!(cancelled.diagnostics()[0].code(), DiagnosticCode::CANCELLED);
+    assert_eq!(session.random_words(), before_words);
+    assert_eq!(store.revision(), before_revision);
+}
+
+fn assert_milestone7_exempt_rules_generate(grammar: &CompiledGrammar) {
+    for entry in ["diverse.nullable", "diverse.recursive"] {
+        let mut exempt_session = SamplerSession::new(7);
+        let mut exempt_store = RepetitionStore::new_location();
+        for _ in 0..4 {
+            exempt_session
+                .generate(
+                    grammar,
+                    &mut exempt_store,
+                    &DiverseGenerationRequest {
+                        entry: Some(entry),
+                        ..DiverseGenerationRequest::default()
+                    },
+                )
+                .expect("nullable/recursive exemption remains generatable");
+        }
     }
 }

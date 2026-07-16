@@ -57,6 +57,8 @@ impl DiagnosticCode {
     pub const FORMATTER: Self = Self("E_FORMATTER");
     pub const LOCALE: Self = Self("E_LOCALE");
     pub const FORMATTER_LIMIT: Self = Self("E_FORMATTER_LIMIT");
+    pub const STATE_BUSY: Self = Self("E_STATE_BUSY");
+    pub const CANCELLED: Self = Self("E_CANCELLED");
     pub const NO_ELIGIBLE_PRODUCTION: Self = Self("E_NO_ELIGIBLE_PRODUCTION");
     pub const WEIGHT_VALUE: Self = Self("E_WEIGHT_VALUE");
     pub const UNSUPPORTED_FEATURE: Self = Self("E_UNSUPPORTED_FEATURE");

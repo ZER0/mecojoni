@@ -224,9 +224,49 @@ async function run(): Promise<void> {
   } finally {
     localized.value.dispose();
   }
+
+  const [diverseRoot, diverseExpected] = await Promise.all([
+    fetchText("/fixtures/milestone7/root.meco.md"),
+    fetchText("/fixtures/expected/milestone7-sequence-v1.outputs"),
+  ]);
+  const diverse = meco.compilePackage({
+    rootId: "root",
+    modules: [{
+      canonicalId: "root",
+      sourceId: 0,
+      sourceName: "root.meco.md",
+      source: diverseRoot,
+      resolvedImports: [],
+    }],
+  });
+  const session = meco.createSession(0n);
+  const repetition = meco.createRepetitionStore();
+  if (!diverse.ok) throw new Error(diverse.error.message);
+  if (!session.ok) throw new Error(session.error.message);
+  if (!repetition.ok) throw new Error(repetition.error.message);
+  try {
+    const outputs: string[] = [];
+    for (let call = 0; call < 16; call++) {
+      const generated = meco.generateDiverse(diverse.value, session.value, repetition.value, {
+        traceSelections: true,
+      });
+      if (!generated.ok) throw new Error(generated.error.message);
+      outputs.push(
+        `${call}|${generated.value.text}|${generated.value.winnerAttempt}|${generated.value.exactRepetitions}|${generated.value.edgeRepetitions}`,
+      );
+    }
+    if (outputs.join("\n") !== diverseExpected.trimEnd()) {
+      throw new Error("Browser diverse sequence differs from Rust and Deno");
+    }
+  } finally {
+    diverse.value.dispose();
+    session.value.dispose();
+    repetition.value.dispose();
+  }
   if (meco.liveHandleCount !== 0) throw new Error(`Leaked ${meco.liveHandleCount} handles`);
   document.body.dataset.status = "passed";
-  document.body.textContent = "Mecojoni browser WASM weighted, typed, and localized corpora passed";
+  document.body.textContent =
+    "Mecojoni browser WASM weighted, typed, localized, and diverse corpora passed";
 }
 
 try {

@@ -249,6 +249,26 @@ Deno.test({
           contentType: "text/plain; charset=utf-8",
         },
       ],
+      [
+        "/fixtures/milestone7/root.meco.md",
+        {
+          path: new URL(
+            "crates/mecojoni-core/tests/fixtures/packages/milestone7/root.meco.md",
+            workspace,
+          ),
+          contentType: "text/plain; charset=utf-8",
+        },
+      ],
+      [
+        "/fixtures/expected/milestone7-sequence-v1.outputs",
+        {
+          path: new URL(
+            "crates/mecojoni-core/tests/fixtures/expected/milestone7-sequence-v1.outputs",
+            workspace,
+          ),
+          contentType: "text/plain; charset=utf-8",
+        },
+      ],
     ]);
     let port = 0;
     const server = Deno.serve({

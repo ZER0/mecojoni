@@ -631,6 +631,23 @@ default resource profile preserves v1's depth limit of 80 and expansion limit of
 The complete profile and limit tables are normative in
 [V2_SPECIFICATION.md](V2_SPECIFICATION.md).
 
+The executable API keeps mutable state explicit. `SamplerSession` owns the parent
+PRNG and call order; `RepetitionStore` owns structural, exact-output, and edge
+histories and may be shared deliberately. `DiverseGenerationRequest` contains no
+seed because the session is the sole random source. Each successful `location/1`
+call reserves 12 substream seeds, commits one winner and one store revision, and
+reports its attempt and novelty score. Any failure leaves both objects unchanged.
+
+```rust
+let mut session = SamplerSession::new(42);
+let mut repetition = RepetitionStore::new_location();
+let result = session.generate(
+    &grammar,
+    &mut repetition,
+    &DiverseGenerationRequest::default(),
+)?;
+```
+
 ## Compilation, generation, and diagnostics
 
 The proposed compiler validates source before any generation. Its checks include:
@@ -774,8 +791,10 @@ opt-in binding/selection traces with exact evaluated weights.
 Stable external messages, typed message/input manifests, transitive
 complete-message effects, explicit locale fallback, formatter provenance, and
 synchronous Rust/JS formatter boundaries are also executable across the shared
-Rust/Deno/Chrome corpus. Stateful sessions/diversity, a production Fluent adapter,
-compound value types, the CLI, and editor tooling remain to be built. Use v1 for
+Rust/Deno/Chrome corpus. Transactional `diverse/1` sessions, hard/soft cooldown,
+bounded exact/edge histories, winner-only commit, and cross-target deterministic
+sequences are executable as well. A production Fluent adapter, compound value
+types, replay snapshots, the CLI, and editor tooling remain to be built. Use v1 for
 features outside this v2 subset.
 
 ## Name
