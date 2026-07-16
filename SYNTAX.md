@@ -133,6 +133,7 @@ parameter        = identifier, ":", space, identifier ;
 
 production       = "-", space, [ metadata, space ], production-content ;
 metadata         = "[", static-weight, "]"
+                 | "[", weight-expression, "]"
                  | "[", long-metadata, "]" ;
 static-weight    = positive-decimal ;
 long-metadata    = "weight", space, "=", space, weight-expression,
@@ -140,8 +141,9 @@ long-metadata    = "weight", space, "=", space, weight-expression,
 ```
 
 The long metadata fields may appear in either order, but each occurs once and
-`weight` is required. A static shorthand must be greater than zero. A long weight
-expression may evaluate to zero at generation time, making the production
+`weight` is required. A static shorthand must be greater than zero. A compact
+weight expression such as `[urgency]` is equivalent to `[weight = urgency]`.
+Dynamic weights may evaluate to zero at generation time, making the production
 ineligible. Metadata-looking text at the beginning of a production is always
 parsed as metadata and malformed forms are errors; literal leading brackets must
 be quoted or raw.
@@ -286,6 +288,7 @@ is literal text. An unterminated or nested comment is an error.
 | --- | --- |
 | `# name <- value: type` | `RuleSyntax` plus `ParameterSyntax` |
 | `[3]` | `WeightSyntax::Static` |
+| `[urgency]` | `WeightSyntax::Dynamic` name expression |
 | `[weight = urgency * 2]` | `WeightSyntax::Dynamic` expression tree |
 | `{mood is tense}` | `ClauseSyntax::Guard` |
 | `{common.name as hero}` / `{rule <- value: $hero as item}` | `ClauseSyntax::Binding` plus optional arguments |

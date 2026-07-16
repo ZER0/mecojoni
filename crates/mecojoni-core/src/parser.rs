@@ -372,14 +372,7 @@ fn parse_weight_prefix<'a>(
     let metadata_span = span(source, start + 1, start + close);
     let (weight, authored_id) = if metadata.contains('=') {
         parse_long_weight(source, metadata, start + 1, metadata_span)?
-    } else {
-        let value = Rational::from_str(metadata).map_err(|error| {
-            failure(
-                DiagnosticCode::WEIGHT_SYNTAX,
-                metadata_span,
-                format!("invalid static weight: {error}"),
-            )
-        })?;
+    } else if let Ok(value) = Rational::from_str(metadata) {
         if !value.is_positive() {
             return Err(failure(
                 DiagnosticCode::WEIGHT_SYNTAX,
@@ -389,6 +382,14 @@ fn parse_weight_prefix<'a>(
         }
         (
             WeightSyntax::Static(Spanned::new(value, metadata_span)),
+            None,
+        )
+    } else {
+        let expression = parse_weight_expression(metadata).map_err(|message| {
+            failure(DiagnosticCode::WEIGHT_SYNTAX, metadata_span, message)
+        })?;
+        (
+            WeightSyntax::Dynamic(Spanned::new(expression, metadata_span)),
             None,
         )
     };
@@ -1746,6 +1747,7 @@ mod tests {
             "# greeting <- name: text\n",
             "- [3] Hello, $name and @person!\n",
             "- [weight = urgency * 2, id = urgent] r\"Wait @here\"\n",
+            "- [urgency] Hurry, $name!\n",
         ));
         let module = parse_module(&source).expect("module parses");
         let rule = &module.rules[0];
@@ -1769,6 +1771,11 @@ mod tests {
                 .value(),
             "urgent"
         );
+        assert!(matches!(
+            rule.productions[2].weight,
+            WeightSyntax::Dynamic(ref expression)
+                if matches!(expression.value(), WeightExpression::Name(name) if name == "urgency")
+        ));
         assert!(matches!(
             rule.productions[0].body,
             BodySyntax::Parts(ref parts)

@@ -292,7 +292,8 @@ of identity is ever derived from a production's list position, and localization
 catalogs never use production IDs as message keys.
 
 The long metadata form is `[weight = 3, id = pickup-common]`; `[3]` remains the
-weight-only shorthand. Authored production IDs are unique within their qualified rule and
+literal weight shorthand, while `[urgency]` abbreviates `[weight = urgency]`.
+Authored production IDs are unique within their qualified rule and
 survive weight changes, reordering, and prose edits until the author changes the
 ID. Derived IDs hash the qualified rule and canonical production body while
 excluding weight. Identical unlabeled alternatives and any ID collision are
@@ -475,8 +476,9 @@ export all three instead.
   literals. It may occupy a whole line or appear between syntax items; its content
   is ignored. The literal sequence `<!--` belongs in a quoted or raw literal.
 - `[3]` is the positive-literal weight shorthand, legal only at the beginning of a
-  production. The long form is `[weight = expression, id = identifier]`, where
-  `id` is optional. A leading literal bracket must be quoted or raw. Malformed
+  production. `[urgency]` is a compact dynamic-weight expression equivalent to
+  `[weight = urgency]`. The long form is `[weight = expression, id = identifier]`,
+  where `id` is optional. A leading literal bracket must be quoted or raw. Malformed
   weight metadata is an error, never silent prose. An omitted weight is exactly
   `1`; the specification defines the accepted decimal/exponent grammar and bit
   budget. Ordinary examples omit `id` and use the compiler's derived
@@ -710,7 +712,7 @@ normative numeric model; they are not first parsed into unconstrained JavaScript
 
 ```meco
 # reaction <- urgency: number
-- [weight = urgency] The alarm is spreading.
+- [urgency] The alarm is spreading.
 - [1] Everything is quiet.
 ```
 

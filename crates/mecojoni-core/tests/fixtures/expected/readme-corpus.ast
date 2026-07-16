@@ -65,7 +65,8 @@ rule weighted-mood()
   p3 w=1/2 id=- c=[] b=L:"cautiously optimistic"
 rule urgency-reaction()
   p0 w=expr:Name("urgency") id=- c=[] b=L:"The alarm is spreading."
-  p1 w=1 id=- c=[] b=L:"Everything is quiet."
+  p1 w=expr:Name("urgency") id=urgent-alarm c=[] b=L:"The alarm is spreading quickly."
+  p2 w=1 id=- c=[] b=L:"Everything is quiet."
 rule titled-greeting()
   p0 w=1 id=- c=[] b=L:"Welcome, " R:name R:title-option L:"."
 rule title-option()

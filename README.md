@@ -217,6 +217,7 @@ inputs:
   playerName: text
   itemCount: number
   mood: Mood
+  urgency: number
 
 imports:
   common: "./common.meco"
@@ -339,7 +340,8 @@ exports: [pickup, greeting, warning]
 
 <!-- Dynamic weights use bare numeric names and are evaluated before selection. -->
 # urgency-reaction
-- [weight = urgency] The alarm is spreading.
+- [urgency] The alarm is spreading.
+- [weight = urgency, id = urgent-alarm] The alarm is spreading quickly.
 - [1] Everything is quiet.
 
 <!-- Empty output, optional text, and an explicitly delimited adjacent reference. -->
@@ -658,8 +660,15 @@ inputs:
   urgency: number
 
 # reaction
-- [weight = urgency] The alarm is spreading.
+- [urgency] The alarm is spreading.
 - [1] Everything is quiet.
+```
+
+`[urgency]` is shorthand for `[weight = urgency]`. Use the long form when the
+production also needs a stable authored identity:
+
+```meco
+- [weight = urgency, id = urgent-alarm] The alarm is spreading.
 ```
 
 The same expression works with a declared rule parameter, such as
