@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the MSRV toolchain and targets
+        run: >-
+          rustup toolchain install 1.85.0 --profile minimal
+          --component rustfmt,clippy
+          --target thumbv6m-none-eabi,wasm32-unknown-unknown
+      - name: Formatting
+        run: cargo +1.85.0 fmt --all -- --check
+      - name: Unit and integration tests
+        run: cargo +1.85.0 test --workspace --all-targets
+      - name: Lints
+        run: cargo +1.85.0 clippy --workspace --all-targets -- -D warnings
+      - name: Bare no_std core
+        run: cargo +1.85.0 check -p mecojoni-core --target thumbv6m-none-eabi
+      - name: WebAssembly artifact
+        run: cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown

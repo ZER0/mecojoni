@@ -14,9 +14,14 @@ context-free grammar—headings define rules and list items define alternatives�
 while adding the structure needed for game data, conditions, reuse, localization,
 and reliable long-running generation.
 
-> **Status:** v2 is a language design and example corpus, not an implemented
-> runtime. The runnable proof-of-concept implementation and its original
-> documentation live in [`v1/`](v1/README.md).
+> **Status:** v2 is in early implementation. The portable Rust/WASM foundation
+> and strict front-matter parser build; the production language and runtime are
+> not implemented yet. The runnable proof of concept and its original
+> documentation live in
+> [`v1/`](v1/README.md).
+
+The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
+with every syntax change; if the documents temporarily disagree, this README wins.
 
 ## Why v2?
 
@@ -53,6 +58,7 @@ localized message that will be rendered.
 | Default target | Required `@start` | Optional root `entry`; otherwise the host chooses an export |
 | References | `@rule` | `@rule`, with `@{rule}` for explicit boundaries and captures |
 | Empty output | `@empty` or `ε` | `""` |
+| Data-dependent weights | Not available | `[weight = expression]` over immutable numeric inputs and parameters |
 | Literal `@` | `@@` | `\@`, quoted strings, or raw literals |
 | Comments | Whole-line `//` | Markdown comments: `<!-- ... -->` |
 | Inputs and types | Not available | Typed front-matter inputs and finite types |
@@ -365,6 +371,10 @@ imports:
 A `# heading` defines a rule and each `-` item is a weighted alternative. Rule
 references expand inline and emit their result:
 
+Initial v2 identifiers are case-sensitive ASCII; terminal text may contain any
+valid UTF-8. Unicode identifiers are deferred so the portable core does not carry
+normalization tables before a real authoring requirement justifies them.
+
 ```meco
 # report
 - The @device is @condition.
@@ -475,6 +485,20 @@ are valid:
 - [0.5] cautiously optimistic
 ```
 
+A dynamic weight may use an immutable numeric input or rule parameter. It is
+evaluated before selection; a value of zero makes that production ineligible.
+
+```meco
+# reaction <- urgency: number
+- [weight = urgency] The alarm is spreading.
+- [1] Everything is quiet.
+```
+
+Dynamic weight expressions use bare names, as guards do. They may use decimal
+literals, number inputs/parameters, parentheses, `+`, `-`, and `*`; they cannot use
+captures, generated rules, messages, callbacks, clocks, or ambient state. This
+keeps the result deterministic and replayable.
+
 An entire production containing `""` emits nothing:
 
 ```meco
@@ -540,6 +564,15 @@ unchangeable semantic property. A host may explicitly override it. The effective
 sampler version, settings, grammar hash, seed, input, locale, and requested entry
 must be recorded for reproducible sessions.
 
+The initial `diverse/1` profile, `location/1`, uses 12 candidate attempts, an
+immediate-reuse gap of one selection, a four-selection soft cooldown horizon,
+3–8 word edge fragments, 300 retained edge records, and 50,000 retained exact
+records. These are versioned profile values, not hidden tuning constants. The
+default resource profile preserves v1's depth limit of 80 and expansion limit of
+2,000 per candidate while also bounding output, sampling work, and rendered bytes.
+The complete profile and limit tables are normative in
+[V2_SPECIFICATION.md](V2_SPECIFICATION.md).
+
 ## Compilation, generation, and diagnostics
 
 The proposed compiler validates source before any generation. Its checks include:
@@ -557,6 +590,12 @@ host language call stack. Failed, losing, cancelled, or over-budget diverse
 candidates roll back their bindings and sampler state. Successful generations can
 return a trace that identifies selected rules, production identities, binding
 events, source locations, sampler adjustments, and formatter/message work.
+
+`composition/1` is an optional, deliberately strict audit heuristic. It warns
+when a sentence-ending locally composed production has fewer than three direct
+emitting grammar references or an authored literal run longer than two words.
+Complete `&message` bodies are exempt because their structure belongs to the
+formatter. It is a signal for review, never a prose-quality verdict.
 
 ## Authoring guidance
 
@@ -601,22 +640,50 @@ sigils.
 
 ## Tooling and implementation direction
 
-The v2 implementation should provide a parser with precise spans, an immutable
-compiled representation, typed APIs, deterministic seeded sessions, structured
-errors, traces, corpus audits, a formatter, and language-server support. The
-runtime should separate immutable grammar content from mutable sampler history so
-nearby NPCs can share repetition memory without making every generator globally
-stateful.
+The primary implementation is Rust. Its core is `#![no_std]` plus `alloc`,
+with no filesystem, network, clock, thread-runtime, environment, or operating-system
+randomness assumptions. Hosts provide source modules, seeds, data, formatter
+results, and persistence explicitly. The core should begin with no external
+dependencies and isolate any unavoidable unsafe code outside it.
+
+JavaScript support targets `wasm32-unknown-unknown` through a dependency-light,
+handwritten linear-memory ABI and JavaScript/TypeScript wrapper for Deno and
+browsers. The WASM adapter supplies its global allocator. A C API is not part of
+the initial v2 scope.
+
+The implementation should provide a parser with precise spans, an immutable
+compiled representation, typed Rust APIs, deterministic seeded sessions,
+structured errors, traces, corpus audits, a formatter boundary, and eventually
+language-server support. The runtime separates immutable grammar content from
+mutable sampler history so nearby NPCs can share repetition memory without making
+every generator globally stateful.
+
+The production core remains `no_std + alloc`, while unit-test harnesses and
+integration tests may use `std`. Integration tests should load checked-in `.meco`
+packages from the filesystem, exercise real imports, and compare exact diagnostics
+and deterministic seeded results. Deno and browser harnesses test the compiled
+WASM interface.
 
 The full rationale, semantic contract, validation plan, localization boundary,
 performance constraints, and implementation phases are in
 [V2_SPECIFICATION.md](V2_SPECIFICATION.md).
+The formal lexical and strict front-matter grammar is in
+[V2_SYNTAX.md](V2_SYNTAX.md).
+The implementation order and completion gates are tracked in
+[ROADMAP.md](ROADMAP.md).
 
 ## Project structure
 
 ```text
 README.md                    V2 overview and canonical syntax corpus
 V2_SPECIFICATION.md          Detailed v2 specification and implementation plan
+V2_SYNTAX.md                 Normative lexical and front-matter grammar
+ROADMAP.md                   Phased implementation plan and completion gates
+Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
+crates/
+  mecojoni-core/             Safe, dependency-free no_std + alloc core
+    tests/fixtures/          Filesystem-backed integration corpus
+  mecojoni-wasm/             Handwritten WASM ABI and target allocator
 v1/
   README.md                  Original runnable v1 documentation
   src/                       V1 compiler, generator, audit, and CLI
@@ -626,11 +693,14 @@ v1/
 
 ## Current limitations
 
-V2 is intentionally not presented as a finished implementation. The source
-syntax, compiler, runtime, formatter adapter, CLI, APIs, and editor tooling still
-need to be built and verified against a published conformance suite. Until then,
-use the v1 implementation for executable experiments and treat v2 files as the
-design target.
+The implementation currently provides owned UTF-8 sources, dual byte/scalar
+spans, structured diagnostics and results, strict front-matter parsing, a
+version-discovery WASM ABI, and build/test coverage across native, bare `no_std`,
+and `wasm32-unknown-unknown` targets. The production-body lexer/parser, compiler,
+generator, formatter adapter, complete buffer/handle ABI, JavaScript wrapper,
+CLI, and editor tooling still need to be built and verified against the
+conformance suite. Until then, use v1 for executable language experiments and
+treat v2 source as the design target.
 
 ## Name
 

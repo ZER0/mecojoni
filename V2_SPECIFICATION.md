@@ -1,6 +1,12 @@
 # Mecojoni v2 Specification and Runtime Design
 
-> This document is a design recommendation, not a description of features that already exist.
+> This document is the target design, not a claim that every feature already
+> exists. The portable workspace foundation and strict front-matter parser are
+> implemented; completion is tracked in `ROADMAP.md`.
+
+The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
+companion. Any syntax change must update all affected documents in the same
+change; if they temporarily conflict, the README wins.
 
 ## Design position
 
@@ -120,7 +126,38 @@ The design becomes much simpler when every kind of state has one owner.
 - a home-grown CLDR database or universal morphology engine;
 - automatic inflection of arbitrary player names;
 - unrestricted fragment-by-fragment localization;
+- a C API or C ABI in the initial v2 implementation;
 - LLM-style open-ended generation.
+
+### Implementation targets and dependency policy
+
+The primary implementation is Rust. The compiler and runtime core use
+`#![no_std]` with `extern crate alloc`; they may allocate owned strings,
+collections, compiled graphs, traces, and generated output, but they cannot assume
+a filesystem, network, clock, thread runtime, environment, or operating-system
+random source. Hosts provide source modules, imports, seeds, request data,
+formatter results, and persistence explicitly.
+
+The initial workspace has two product crates:
+
+- `mecojoni-core`: the safe `no_std + alloc` parser, compiler, immutable IR,
+  validator, generator, samplers, diagnostics, and serialization contracts;
+- `mecojoni-wasm`: a thin `wasm32-unknown-unknown` adapter with a global allocator,
+  explicit exported allocation/handle functions, and a handwritten JavaScript and
+  TypeScript wrapper for browsers and Deno.
+
+An optional `std` CLI/tooling crate may be added after the core API stabilizes. A
+C adapter is not part of v2 scope. The core should begin with no third-party
+dependencies; a dependency is accepted only when its safety, maintenance, or
+standards value clearly exceeds the portability and audit cost. Unsafe Rust is
+forbidden in the core and isolated to reviewed ABI code where it is unavoidable.
+
+Unit tests exercise internal components. Integration tests use `std` and load
+checked-in `.meco` packages from the filesystem, including imports, invalid
+packages, expected diagnostics, seeded corpora, and adversarial cases. JavaScript
+integration tests load the built WebAssembly module in both Deno and a browser
+harness. Checked-in fixtures and expected files are preferred over snapshot-test
+dependencies.
 
 ## Non-negotiable invariants
 
@@ -245,8 +282,8 @@ otherwise the compiler assigns a content-addressed artifact-local ID. Neither ki
 of identity is ever derived from a production's list position, and localization
 catalogs never use production IDs as message keys.
 
-The long metadata form is `[weight=3, id=pickup-common]`; `[3]` remains the weight-
-only shorthand. Authored production IDs are unique within their qualified rule and
+The long metadata form is `[weight = 3, id = pickup-common]`; `[3]` remains the
+weight-only shorthand. Authored production IDs are unique within their qualified rule and
 survive weight changes, reordering, and prose edits until the author changes the
 ID. Derived IDs hash the qualified rule and canonical production body while
 excluding weight. Identical unlabeled alternatives and any ID collision are
@@ -311,7 +348,8 @@ is no silent compare-and-swap retry against changed history.
 ## Language design
 
 The following author-facing syntax records the current format-2 proposal and the
-examples agreed during review. It remains a draft until its front-matter schema,
+examples agreed during review. The implemented front-matter subset is formalized
+in `V2_SYNTAX.md`; the production language remains a draft until its complete
 lexer, EBNF, whitespace rules, and conformance fixtures are published and pass an
 independent implementation.
 
@@ -428,25 +466,26 @@ export all three instead.
 - `<!-- ... -->` is a non-nestable Markdown comment outside quoted or raw
   literals. It may occupy a whole line or appear between syntax items; its content
   is ignored. The literal sequence `<!--` belongs in a quoted or raw literal.
-- `[3]` is legal only at the beginning of a production. A leading literal bracket
-  must be quoted or raw. Malformed weight metadata is an error, never silent prose.
-  An omitted weight is exactly `1`; the specification defines the accepted
-  decimal/exponent grammar and bit budget. An authored `id` is optional and uses a
-  distinct long-form metadata syntax to be specified separately; ordinary examples
-  omit it and use the compiler's derived artifact-local identity.
+- `[3]` is the positive-literal weight shorthand, legal only at the beginning of a
+  production. The long form is `[weight = expression, id = identifier]`, where
+  `id` is optional. A leading literal bracket must be quoted or raw. Malformed
+  weight metadata is an error, never silent prose. An omitted weight is exactly
+  `1`; the specification defines the accepted decimal/exponent grammar and bit
+  budget. Ordinary examples omit `id` and use the compiler's derived
+  artifact-local identity.
 - A production whose complete body is `""` emits empty text. An empty quoted
   segment inside an otherwise nonempty body is rejected as a misleading no-op. A
   nullable referenced rule can still contribute zero width.
 - Version syntax is exact: the front-matter `meco` field accepts only integer
   versions declared by the implementation; dotted strings or coercible values are
   not silently accepted.
-- File and byte-oriented APIs require valid UTF-8; malformed byte sequences are
+- Byte-oriented APIs require valid UTF-8; malformed byte sequences are
   errors. A JavaScript string API likewise rejects unpaired UTF-16 surrogates
   instead of silently replacing them. Physical line endings are normalized, but
-  terminal text is otherwise preserved exactly. Identifiers alone are normalized
-  to NFC. Bare identifiers follow a documented Unicode identifier profile; a
-  quoted form covers unusual names such as a digit-leading taxonomy label. Names
-  remain case-sensitive.
+  terminal text is otherwise preserved exactly. The initial v2 implementation
+  uses case-sensitive ASCII identifiers and unrestricted UTF-8 terminal text.
+  Unicode identifiers and normalization are deferred until a real authoring need
+  justifies their tables or dependency cost.
 - Compiler spans carry both UTF-8 byte offsets and Unicode scalar-value indices.
   Editor integrations convert those coordinates to the UTF-16 positions required
   by LSP; the core never labels UTF-16 code units as characters.
@@ -655,9 +694,31 @@ terms of a pinned Unicode algorithm before it can participate in seeded output.
 
 ### Weights and strategy semantics
 
-Weights are always positive, bounded decimal-rational **base weights** under a
+Static weights are positive, bounded decimal-rational **base weights** under a
 normative numeric model; they are not first parsed into unconstrained JavaScript
-`Number` values.
+`Number` values. A leading dynamic form may instead use a typed numeric expression:
+
+```meco
+# reaction <- urgency: number
+- [weight = urgency] The alarm is spreading.
+- [1] Everything is quiet.
+```
+
+Weight expressions may contain finite decimal literals, number-valued immutable
+inputs or rule parameters, parentheses, and `+`, `-`, and `*`. They use bare names,
+as guards do: `$urgency` remains an output or call-argument reference. Bindings,
+captures, rule references, messages, arrays, records, host callbacks, clocks, and
+ambient state are forbidden. The expression is evaluated after guard eligibility
+but before weighted selection. Its bounded rational result must be non-negative;
+zero makes that production ineligible, while a negative, non-finite, or overflowing
+result is a typed generation error. If every guard-eligible production evaluates to
+zero, generation returns `E_NO_ELIGIBLE_PRODUCTION`.
+
+Under `weighted/1`, an evaluated value is the exact relative weight. Under
+`diverse/1`, it is the base weight before hard-gap filtering, soft cooldown, and
+diversity adjustment. The authored expression, evaluated rational value, and final
+effective weight are recorded in traces and replay receipts. A dynamic-weight rule
+cannot use a precomputed static alias table.
 
 - Under `weighted/1`, they are exact relative probabilities.
 - Under `diverse/1`, they are priors modified by documented structural cooldown,
@@ -679,9 +740,42 @@ A session may override it only through an explicit strategy option. The effectiv
 policy, override, and all settings enter the artifact/session hashes and replay
 receipt.
 
+#### `diverse/1` baseline profile
+
+The first published `diverse/1` profile is `location/1`. It is the default only
+when a host explicitly selects `diverse/1`; a one-shot generation request still
+defaults to `weighted/1`. `location/1` fixes the following values:
+
+| Setting | Value |
+| --- | ---: |
+| candidate attempts | 12 |
+| hard minimum gap | 1 committed selection per qualified structural rule |
+| soft cooldown horizon | 4 committed selections |
+| soft cooldown strength | `3/4` |
+| diversity factor | `min(4, isqrt((1 + floor_log2(descendants)) × 2^32) / 2^16)` |
+| edge fragments | first/last 3–8 words, plus two-word internal sentence boundaries |
+| edge-history window | 300 returned phrases |
+| exact-history window | 50,000 normalized returned phrases |
+
+`descendants` is the compiler's bounded structural-diversity estimate for the
+production, with a minimum of one. `floor_log2` and `isqrt` are exact unsigned
+integer operations, so the displayed diversity factor is a deterministic 16.16
+fixed-point value. The hard minimum gap applies first. For an alternative older
+than the hard gap but still inside the soft horizon, let `recovery` be its clamped
+rational progress from the hard gap to the horizon; its cooldown multiplier is
+`1/4 + 3/4 × recovery`. The soft cooldown and diversity factor only rank
+alternatives that remain eligible. Nullable and
+recursion-sensitive rules are exempt from both cooldown and diversity adjustment.
+Rendered history is used only in a profile mode whose privacy and formatter
+contract permits it; otherwise the same capacities apply to structural or shell
+history. These values, the scoring mode, and the normalizer/tokenizer versions are
+part of `location/1` and therefore of every replay receipt. A changed value requires
+a new profile or sampler version, never a silent tuning change.
+
 For ordinary structural rules, `diverse/1` defines `minimumGap = g` as follows.
-Let `E` be guard-eligible positive-weight productions and `C` those selected within
-the previous `g` committed selections of that qualified rule. If `E − C` is
+Let `E` be guard-eligible productions whose static or evaluated dynamic base weight
+is positive, and `C` those selected within the previous `g` committed selections of
+that qualified rule. If `E − C` is
 nonempty, only that set may be selected. If cooldown covers all of `E`, the policy
 re-enables the oldest member deterministically (ties use stable production ID) and
 records the relaxation in the trace. Candidate-local repeated calls see their own
@@ -755,6 +849,30 @@ Every request validates separately named positive safe-integer limits for:
 - per-call aggregate expansions, sampler steps, and candidate count;
 - final rendered code points and UTF-8 bytes;
 - formatter-reported deterministic work units, when the adapter supports them.
+
+#### `interactive/1` resource profile
+
+Unless a host selects another named profile, generation uses `interactive/1`:
+
+| Limit | `weighted/1` | `diverse/1` with `location/1` |
+| --- | ---: | ---: |
+| candidate attempts | 1 | 12 |
+| maximum derivation depth per candidate | 80 | 80 |
+| maximum rule expansions per candidate | 2,000 | 2,000 |
+| maximum unformatted code points per candidate | 16,384 | 16,384 |
+| maximum sampler PRNG words/rejection steps per candidate | 8,192 | 8,192 |
+| maximum aggregate rule expansions per call | 2,000 | 24,000 |
+| maximum aggregate sampler steps per call | 8,192 | 98,304 |
+| maximum final rendered code points | 16,384 | 16,384 |
+| maximum final UTF-8 bytes | 65,536 | 65,536 |
+| maximum formatter work units, when reported | 10,000 | 10,000 |
+
+The formatter work-unit limit is a contract only for adapters that report
+deterministic units. An adapter that cannot account for its work must be marked
+non-replayable and requires an explicit host opt-in. Hosts may choose a different
+named profile or tighten individual limits; any looser custom limit set is a named
+profile whose values enter the replay receipt. Wall-clock time is never a seeded
+limit.
 
 Wall-clock time is never a seeded limit. A candidate that exceeds its local limit
 is disqualified with a recorded diagnostic; exhausting every candidate is a typed
@@ -979,6 +1097,22 @@ Every public audit validates its alternate entry through the same helper as
 generation. The compositionality audit remains a named heuristic, not a general
 prose-quality claim.
 
+`composition/1` is the initial heuristic. It inspects each reachable, locally
+composed production whose visible source body ends in `.`, `!`, or `?`. It emits
+`W_COMPOSITION_SHELL` when either condition holds:
+
+- the body contains fewer than three direct emitting grammar references or
+  emitting captures; or
+- a maximal run of authored terminal words contains more than two words.
+
+Non-emitting guards and bindings do not count as emitting structure. Values such as
+`$hero` do not count as grammar references. A complete `&message` body is exempt:
+its structure belongs to the formatter and cannot be judged from the grammar
+source. The report includes the qualified rule, production ID, source span, direct
+emitting-reference count, longest literal run, and failed condition. It never
+claims that a production is bad prose. `meco audit --composition` prints the report
+but exits successfully unless the caller has explicitly requested warning failures.
+
 Useful lints include:
 
 - the same rule referenced repeatedly without an emitting capture or a non-emitting
@@ -1017,10 +1151,17 @@ mutation-induced stale-cache failure, or unclassified `TypeError`/`RangeError`.
 
 ### Public API
 
-Implement the public surface in TypeScript or ship generated declarations and
-complete JSDoc. Keep parsing/compiler types separate from stable runtime types.
-Return a structured result with text, derivation/message IDs, requested/actual
-locale, trace, novelty metrics, formatter diagnostics, and a replay receipt.
+Rust is the primary public API. Keep parsing/compiler types separate from stable
+runtime types and expose owned or explicitly borrowed values without leaking
+mutable compiler internals. Return structured results containing text,
+derivation/message IDs, requested/actual locale, trace, novelty metrics, formatter
+diagnostics, and a replay receipt.
+
+The WebAssembly adapter exposes a small handwritten ABI based on linear-memory
+byte ranges and opaque handles. Its JavaScript wrapper owns encoding, decoding,
+handle disposal, error translation, and ergonomic object shapes; it ships matching
+TypeScript declarations and complete JSDoc. The ABI is versioned and tested
+directly so JavaScript convenience code never becomes core language semantics.
 
 A `ReplayReceipt` is a verification/lookup record, not automatically a self-
 contained replay. It includes grammar and strategy hashes, the pre-call session
@@ -1055,9 +1196,26 @@ from live novelty history.
 
 ### CLI and editor workflow
 
-Use `node:util.parseArgs()` or an equivalent tested parser. Support conventional
-`--flag=value` syntax, reject a flag consumed as another flag's value, and keep
-messages consistent.
+If a `std` CLI is added, use a small well-tested argument layer. Support
+conventional `--flag=value` syntax, reject a flag consumed as another flag's
+value, and keep messages consistent.
+
+The CLI has two output modes: `text` (the default) and `jsonl`. In `text` mode,
+`meco generate` writes each returned generated text value followed by exactly one
+line-feed to standard output. It is human display output, not a lossless record
+format for multiple multiline results. `--trace` writes tree traces and metrics
+only to standard error. `check`, `lint`, `audit`, `manifest`, `migrate`, and `bench`
+write their primary human-readable report to standard output and all diagnostics to
+standard error. In `jsonl` mode, each successful result or report is one stable JSON
+object on standard output; requested trace data is embedded in the corresponding
+result object, not interleaved on standard error.
+
+Exit status `0` means the command completed without error-severity diagnostics.
+Status `1` means a source, data, generation, formatter, or explicitly requested
+audit/lint threshold failed. Status `2` means command usage or host I/O failure.
+Status `3` is an unexpected internal failure. Warnings do not change status unless
+the caller selects a warning-failure threshold. These streams, statuses, and JSONL
+records are versioned CLI contracts.
 
 The CLI is an author/build tool, not a per-line game API:
 
@@ -1122,7 +1280,7 @@ using a warm session.
 | Literal numeric brackets collide with weights | Weight region exists only at the beginning of a production | Quoted/raw leading bracket and malformed-weight fixtures |
 | Empty-output semantics are ambiguous | A complete `""` body is the sole authored empty-production form | Inline empty segments diagnose; nullable referenced rules remain defined |
 | Version parsing accepts unsupported shapes | Exact integer `meco` field and separate slash-versioned sampler | Conformance tests reject unsupported, dotted, or coerced values consistently |
-| Identifiers and global namespace limit scale | Unicode-normalized/quoted identifiers, modules, aliases, exports, private rules | Multi-file resolution, collision, visibility, and normalization tests |
+| Identifiers and global namespace limit scale | ASCII identifiers initially, plus modules, aliases, exports, and private rules; Unicode identifiers remain a versioned extension | Multi-file resolution, collision, visibility, and invalid-identifier tests |
 | Repeated rule references redraw values | Candidate-local emitting capture plus ordered non-emitting bindings | One chosen name remains identical everywhere it is reused; one or many generated values feed a complete message without preceding text |
 | Host-supplied constraints and agreement | Typed inputs, parameters, exhaustive finite guards, and complete localized messages | Host trait/count fixtures select only valid guarded or formatted variants |
 | Agreement for internally generated structured entities | Deferred typed feature-record extension, not falsely solved by capture | No production claim until feature records have their own spec and invalid-combination suite |
@@ -1138,7 +1296,7 @@ using a warm session.
 | Candidate fragments and factors are recomputed | Store fragments on candidates; precompute invariant factors | Allocation/profile regression tests |
 | Very large production fan-out is linear and costly | Static alias option, explicit complexity, linter/hierarchy guidance | 10–50,000 alternative benchmark tracked without universal claims |
 | CLI parsing and per-line spawning are fragile | Standard parser; CLI positioned for humans/builds; warm library API | Subprocess argument tests and cold-vs-warm benchmark |
-| API lacks types and stable docs | TypeScript declarations, versioned request/result/error contracts | Type tests and generated API documentation |
+| API lacks types and stable docs | Typed Rust API plus handwritten JavaScript wrapper and TypeScript declarations over a versioned WASM ABI | Rust API tests, TypeScript type tests, ABI tests, and generated documentation |
 | Test and benchmark evidence is incomplete | Conformance, property, fuzz, CLI, localization, memory, and committed benchmark suites | CI quality gates below |
 | `varied` is surprising as a default | Explicit grammar/API strategy; conservative weighted default | No stateful policy is selected implicitly |
 | Source is the only specification | Normative EBNF/lexical spec and parser-independent fixtures | A second parser can pass the same conformance corpus |
@@ -1155,9 +1313,9 @@ using a warm session.
 - every escape, quoted/raw block, comment boundary, block-chomping mode, and
   empty/one-space/two-space/interpolation whitespace boundary;
 - decimal/scientific policy, malformed, zero, negative, infinite, and overflowing
-  weights;
-- required braced rule/message references, suffixes, value interpolation,
-  namespaced and quoted identifiers, and malformed delimiters;
+  static and dynamic weights, including forbidden dynamic-weight dependencies;
+- braced boundary references, short rule/message references, suffixes, value
+  interpolation, namespaced ASCII identifiers, and malformed delimiters;
 - `{mood is tense}`, `is not`, ordering and boolean precedence, plus unknown,
   wrongly typed, and same-production-binding guard names;
 - emitting captures, single and multiple non-emitting bindings, compact versus
@@ -1168,8 +1326,9 @@ using a warm session.
 - authored/derived production IDs across reorder, weight/prose edits, insertion,
   deletion, absence of an authored ID, duplicate alternatives, and forced
   collision fixtures;
-- modules, visibility, import cycles, duplicate names, and Unicode normalization;
-- exact round-tripping of composed/decomposed accents, CJK, emoji, bidi text, and
+- modules, visibility, import cycles, duplicate names, and invalid ASCII identifiers;
+- exact terminal-text round-tripping of composed/decomposed accents, CJK, emoji,
+  bidi text, and
   astral Unicode scalar-value span coordinates, plus rejection of unpaired
   surrogates and malformed UTF-8;
 - exact source spans and stable diagnostic codes;
@@ -1289,6 +1448,10 @@ A greenfield design still needs an honest path for existing `.meco` files:
 ### Phase 0 — Decide the product and freeze the contracts
 
 - Ratify the ambient/procedural-text product boundary and non-goals.
+- Treat the README syntax as authoritative and update this specification with
+  every syntax decision.
+- Freeze the Rust `no_std + alloc` core boundary, minimal-dependency policy,
+  handwritten versioned WASM ABI, and absence of a C API.
 - Assemble small, large, recursive, localized, and adversarial real-world corpora.
 - Publish the front-matter schema, lexical rules, EBNF, entry/input/parameter and
   ordered-binding models, module resolution, readable guard grammar, error codes,
@@ -1300,11 +1463,15 @@ behaves without reading source code.
 
 ### Phase 1 — Build the safe deterministic core
 
+- Cargo workspace with a dependency-free, unsafe-free `mecojoni-core`, a thin
+  `mecojoni-wasm`, and `std`-enabled filesystem integration-test utilities.
 - Lexer/parser with exact spans and immutable IR.
 - Modules, imports, aliases, visibility, name resolution, SCC, productivity work
   queue, and recursion-risk lints.
 - Iterative expansion, typed limits, bounded rational weights, and `weighted/1`.
 - Immutable request data, centralized validation, types, and stable errors.
+- An early Rust/Deno/browser vertical slice for compilation and `weighted/1`
+  generation through the handwritten WASM ABI.
 
 **Exit:** deep, malformed, and adversarial inputs fail only through documented
 diagnostics; deterministic weighted generation passes the conformance suite.
@@ -1385,6 +1552,9 @@ A stable release should not ship until all of the following are true:
   IDs with a pure versioned formatter, catalog, and fallback validation;
 - the CLI has subprocess tests, the API has types, and representative benchmarks
   are committed;
+- the core builds as `no_std + alloc`, the WASM artifact builds for
+  `wasm32-unknown-unknown`, and real-file integration fixtures pass through Rust,
+  Deno, and a browser harness;
 - documentation distinguishes proof of productivity, probabilistic risk, and
   runtime work limits.
 

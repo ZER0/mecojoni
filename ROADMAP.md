@@ -1,0 +1,279 @@
+# Mecojoni v2 Roadmap
+
+This roadmap turns the language in `README.md` and the runtime design in
+`V2_SPECIFICATION.md` into testable implementation milestones. The README is the
+authoritative syntax source. A syntax change is incomplete until the README,
+specification, fixtures, and parser tests agree.
+
+## Fixed implementation constraints
+
+- Rust is the primary implementation language and public API.
+- `mecojoni-core` is `#![no_std]` plus `alloc`.
+- The core starts with no third-party dependencies and contains no unsafe Rust.
+- JavaScript targets `wasm32-unknown-unknown` through a handwritten ABI and thin
+  JavaScript/TypeScript wrapper for Deno and browsers.
+- The WASM adapter may provide a global allocator and contain narrowly reviewed
+  ABI-level unsafe code.
+- A C API is out of scope.
+- Initial identifiers are case-sensitive ASCII; terminal text is unrestricted
+  valid UTF-8. Unicode identifiers are a future versioned extension.
+- Unit-test and integration-test crates may use `std`.
+- Integration tests load real `.meco` packages and imports from checked-in
+  filesystem fixtures.
+- Seeded behavior, error codes, source spans, and ABI behavior are compatibility
+  contracts once stabilized.
+
+## Milestone 0 — Freeze the implementable contracts
+
+Translate the prose design into artifacts an implementation can test.
+
+- [ ] Publish normative lexical rules and EBNF matching the README corpus.
+- [x] Specify strict front-matter fields and indentation rules without depending
+  on a YAML implementation.
+- [ ] Specify ASCII identifiers, qualified names, reference boundaries, comments,
+  string escapes, raw strings, block chomping, weights, and empty output.
+- [ ] Specify guards, bindings, captures, typed parameters, `<-` argument punning,
+  and complete-message effects.
+- [x] Define source span coordinates, diagnostic structure, and initial stable
+  error-code families.
+- [ ] Define the exact numeric representation and accepted syntax for weights.
+- [ ] Select and specify the deterministic PRNG and seed-to-state algorithm.
+- [ ] Implement and fixture the `location/1` diverse profile, `interactive/1`
+  resource profile, and their replay-visible fixed-point/tokenizer details.
+- [ ] Implement and fixture the `composition/1` audit heuristic and its
+  message-body exemption.
+- [ ] Implement and fixture text/JSONL CLI streams, exit statuses, and
+  warning-failure policy.
+- [ ] Define host-supplied package loading and import resolution without core I/O.
+- [ ] Draft the versioned handwritten WASM ABI, ownership rules, handle lifecycle,
+  allocator boundary, and JavaScript error model.
+- [x] Record the minimum supported Rust version and edition.
+- [ ] Create parser-independent valid and invalid conformance fixtures.
+
+**Exit gate:** every syntax example in the README has one predicted AST and every
+invalid fixture has an expected error code and precise span.
+
+## Milestone 1 — Establish the portable workspace
+
+Create the smallest buildable skeleton before implementing language behavior.
+
+- [x] Create a Cargo workspace with `mecojoni-core` and `mecojoni-wasm` crates.
+- [x] Configure `mecojoni-core` as `no_std + alloc` with no default dependency on
+  `std`.
+- [x] Add compile checks for the native host and `wasm32-unknown-unknown`.
+- [x] Deny unsafe code in the core crate.
+- [x] Define foundational source ID, span, diagnostic, error, and result types.
+- [x] Add unit-test support and a `std` integration-test fixture loader.
+- [x] Establish `tests/fixtures/valid`, `invalid`, `packages`, and `expected`
+  conventions.
+- [x] Add CI gates for formatting, lints, unit tests, integration tests, and both
+  compilation targets.
+
+**Exit gate:** an empty core builds without `std`, the WASM target links with its
+allocator, and an integration test reads a real fixture from disk.
+
+## Milestone 2 — Lexer and parser
+
+Implement source processing without generation shortcuts.
+
+- [ ] Validate UTF-8 and normalize physical line endings.
+- [ ] Lex front matter, headings, productions, weights, comments, sigils,
+  bindings, guards, calls, strings, raw strings, and block literals.
+- [ ] Preserve exact byte and Unicode-scalar source coordinates.
+- [x] Parse strict front matter without general YAML features.
+- [ ] Parse rules, typed parameter headings, productions, expressions, references,
+  captures, bindings, message calls, and multiline argument lists.
+- [ ] Recover from independent syntax errors and aggregate diagnostics where safe.
+- [ ] Reject invalid ASCII identifiers while preserving arbitrary UTF-8 terminal
+  text exactly.
+- [ ] Add unit tests for every token and AST form.
+- [ ] Add filesystem integration fixtures covering complete single-file sources,
+  malformed inputs, CRLF, Unicode text, and exact diagnostics.
+
+**Exit gate:** the full README corpus parses, canonical invalid fixtures fail with
+their expected diagnostics, and parser code builds as `no_std + alloc`.
+
+## Milestone 3 — Compiler and deterministic weighted generation
+
+Deliver the first useful vertical slice through the Rust API.
+
+- [ ] Accept package sources and canonical module IDs supplied by the host.
+- [ ] Resolve modules, aliases, exports, optional default entry, rule references,
+  and visibility.
+- [ ] Build immutable indexed IR without exposing mutable internal collections.
+- [ ] Validate duplicate and undefined names, rule arity, public entries, and
+  malformed weights.
+- [ ] Compute reachability, productivity, nullable rules, recursive components,
+  and recursion-risk diagnostics with iterative graph algorithms.
+- [ ] Implement exact bounded relative weights and unbiased `weighted/1` choice.
+- [ ] Implement the specified deterministic PRNG.
+- [ ] Expand with an explicit stack and exact depth, expansion, and output limits.
+- [ ] Support literal text, ordinary references, quoted/raw/block text, empty
+  output, and productive recursion.
+- [ ] Expose compile and weighted-generation APIs from Rust.
+- [ ] Add deterministic seeded corpora, statistical weight checks, deep-recursion
+  fixtures, and adversarial limit tests.
+
+**Exit gate:** real multi-file fixtures compile from disk in integration tests;
+fixed grammar/seed/request tuples produce fixed output and never consume the
+native call stack recursively.
+
+## Milestone 4 — First browser and Deno vertical slice
+
+Prove the deployment model before the language grows further.
+
+- [ ] Finalize ABI version discovery and allocator/deallocator exports.
+- [ ] Expose package construction, compilation, weighted generation, result
+  access, diagnostics, and handle disposal through opaque handles.
+- [ ] Prevent stale, double-freed, cross-kind, and out-of-range handle use.
+- [ ] Write the dependency-light JavaScript wrapper and TypeScript declarations.
+- [ ] Ensure JavaScript strings are encoded and decoded strictly at the boundary.
+- [ ] Add Deno integration tests using real `.meco` fixture files.
+- [ ] Add browser tests for the same compiled WASM artifact.
+- [ ] Verify repeated compile/generate/dispose cycles do not leak handles or linear
+  memory beyond documented allocator behavior.
+
+**Exit gate:** the same fixture and seed produce the same result through Rust,
+Deno, and a browser, with equivalent structured diagnostics.
+
+## Milestone 5 — Types, guards, parameters, captures, and bindings
+
+Implement the v2 authoring features that solve v1's main composition limits.
+
+- [ ] Implement core scalar types, finite enums, immutable request data, and
+  runtime type validation.
+- [ ] Implement typed rule declarations using `# rule <- name: type`.
+- [ ] Implement `@rule <- ...` calls, explicit named arguments, shorthand
+  argument punning, arity checks, and type checks.
+- [ ] Implement restricted guard expressions and eligibility selection.
+- [ ] Implement `[weight = expression]` using immutable number inputs/parameters,
+  bounded rational arithmetic, zero-weight ineligibility, and trace/replay data.
+- [ ] Reject dynamic-weight access to bindings, captures, rules, messages,
+  callbacks, clocks, and ambient state.
+- [ ] Enforce guards before bindings and reject same-production binding use in a
+  guard.
+- [ ] Implement emitting capture `@{rule as name}`.
+- [ ] Implement ordered non-emitting binding `{rule as name}`.
+- [ ] Enforce lexical scope, immutability, no shadowing, no forward references,
+  and explicit parameter passing to child rules.
+- [ ] Make all bindings candidate-local and traceable.
+- [ ] Add integration fixtures for host data, enums, dynamic weights, multiple
+  bindings, recursion frames, invalid calls, and deterministic binding order.
+
+**Exit gate:** the guarded, parameterized, and binding-heavy examples embedded in
+the README compile and generate exactly as documented through Rust and WASM.
+
+## Milestone 6 — Complete-message localization boundary
+
+Add localization without embedding a localization system in the core.
+
+- [ ] Implement stable `&message` references and typed `<-` arguments.
+- [ ] Define a synchronous host formatter request/result protocol.
+- [ ] Enforce the transitive complete-message effect.
+- [ ] Reject message capture, suffixing, wrapping, multiple visible messages, and
+  message-valued non-emitting bindings.
+- [ ] Build and validate message/input manifests.
+- [ ] Support explicit locale and fallback information without ambient globals.
+- [ ] Add a test formatter for Rust integration tests and callback/protocol support
+  in the WASM wrapper.
+- [ ] Add at least English and one locale with `few`/`many` categories to the
+  integration corpus.
+
+**Exit gate:** internally generated values feed a localized complete message in
+Rust, Deno, and browser tests; missing messages and schema drift produce stable
+diagnostics.
+
+## Milestone 7 — Diverse sampling and transactional state
+
+Rebuild repetition resistance with explicit ownership and rollback.
+
+- [ ] Implement versioned `diverse/1` semantics over documented base-weight
+  priors.
+- [ ] Separate immutable grammar, sampler session, and repetition store.
+- [ ] Implement structural cooldown and bounded diversity factors.
+- [ ] Generate candidate-local state deltas and commit only the winner.
+- [ ] Add exact-output and opening/ending novelty histories with bounded storage
+  and constant-time eviction.
+- [ ] Preserve recursion and nullable-rule probability contracts.
+- [ ] Define deterministic candidate work and PRNG consumption.
+- [ ] Reject overlapping mutation of one ordered session/store.
+- [ ] Add transactional rollback, cooldown, eviction, and deterministic replay
+  integration tests.
+- [ ] Add golden tests for every `location/1` setting, including candidate count,
+  cooldown relaxation, fragment windows, exact-history eviction, and nullable or
+  recursive exemptions.
+
+**Exit gate:** rejected, failed, cancelled, and over-budget candidates leave no
+committed state, and a saved deterministic fixture sequence matches on every
+supported target.
+
+## Milestone 8 — Tracing, audits, and replay
+
+Make generated text explainable and state reproducible.
+
+- [ ] Record stable rule, production, source, binding, message, and output-span
+  provenance.
+- [ ] Attribute repeated visible fragments only to emitters whose spans overlap
+  them.
+- [ ] Expose optional traces and metrics without paying their full cost when off.
+- [ ] Implement structural and rendered repetition audits.
+- [ ] Implement `composition/1` and fixtures for its direct-reference count,
+  literal-run rule, and complete-message exemption.
+- [ ] Implement versioned session/repetition snapshots and replay receipts.
+- [ ] Define retention, logical-byte budgets, pinning, expiry, and sensitive-data
+  handling.
+- [ ] Add round-trip replay tests after nonempty history through Rust and WASM.
+
+**Exit gate:** awkward output can be traced to its actual visible emitters, audits
+do not blame unrelated deep rules, and snapshot restore reproduces the next output.
+
+## Milestone 9 — Authoring tools and v1 migration
+
+Build tools only after the core contracts are stable.
+
+- [ ] Add an optional `std` CLI crate for check, generate, trace, lint, manifest,
+  audit, migrate, and bench workflows.
+- [ ] Keep filesystem and process behavior outside `mecojoni-core`.
+- [ ] Implement a source formatter proven not to alter output semantics.
+- [ ] Freeze a v1 reader and implement explicit v1-to-v2 migration.
+- [ ] Produce migration diagnostics for ambiguous whitespace, sigils, empty text,
+  comments, and weight-looking prose.
+- [ ] Add subprocess tests and real v1/v2 corpus comparisons.
+- [ ] Test text versus JSONL output, stdout/stderr separation, all defined exit
+  statuses, and warning-failure thresholds.
+- [ ] Add initial editor grammar and language-server support if demanded by real
+  authoring use.
+
+**Exit gate:** checked-in v1 projects migrate explicitly, generated differences
+are reported honestly, and every CLI command has filesystem integration tests.
+
+## Milestone 10 — Optimization and stabilization
+
+Optimize only measured workloads and prepare a stable release.
+
+- [ ] Commit representative flat, tree, chain, dense, recursive, and large-fanout
+  benchmarks.
+- [ ] Track operation counts and allocation behavior across native and WASM
+  targets.
+- [ ] Optimize graph passes, selection indexes, histories, or serialization only
+  when a committed workload justifies the complexity.
+- [ ] Decide whether compiled artifact serialization is needed.
+- [ ] Freeze language, sampler, ABI, snapshot, and diagnostic compatibility rules.
+- [ ] Publish Rust API documentation, JavaScript/TypeScript documentation,
+  conformance fixtures, examples, and migration guidance.
+
+**Exit gate:** every retained optimization has before/after evidence, all public
+compatibility contracts are versioned, and the release gate in
+`V2_SPECIFICATION.md` is satisfied.
+
+## Deferred ideas
+
+- Unicode identifiers and NFC normalization.
+- Typed feature records for internally generated grammatical agreement.
+- A standards-based localization adapter package.
+- Serialized compiled artifacts and streaming generation.
+- Persistent external repetition stores.
+- Bindings for additional host languages.
+
+Deferred items are not compatibility promises. Each requires its own concrete use
+case, contract, fixtures, and versioning decision before entering a milestone.
