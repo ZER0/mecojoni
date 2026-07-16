@@ -50,7 +50,7 @@ Compile once and reuse the immutable grammar. `SamplerSession` and
 Complete messages use `compile_package_with_manifest` and a synchronous
 preloaded `Formatter`. The filesystem-backed `tests/fluent_integration.rs` proof
 uses the real `fluent-bundle` crate as a dev dependency to cover typed arguments,
-English and Polish plurals, gender selection, ordered fallback, provenance, and
+English and Italian plurals, gender selection, ordered fallback, provenance, and
 bidi isolation without adding a production dependency. See the root README,
 generated `cargo doc`, `COMPATIBILITY.md`, and `CONFORMANCE.md` for the full
 contracts.

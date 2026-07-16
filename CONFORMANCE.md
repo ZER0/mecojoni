@@ -8,7 +8,7 @@ contracts rather than snapshots of implementation internals.
 | Canonical syntax corpus | `README.md` plus `crates/mecojoni-core/tests/fixtures/expected/readme-corpus.ast` | Parsed AST prediction and exact generation tests. |
 | Invalid headers/bodies | `crates/mecojoni-core/tests/fixtures/invalid/` | Stable codes and exact byte/scalar spans. |
 | Package/import semantics | `crates/mecojoni-core/tests/fixtures/packages/` | Filesystem modules, imports, visibility, typing, messages, diversity, and replay. |
-| Fluent formatter composition | `crates/mecojoni-core/tests/fluent_integration.rs` plus `crates/mecojoni-core/tests/fixtures/packages/fluent/` | Real `.ftl` resources receive typed Mecojoni arguments and prove English/Polish plurals, gender selects, explicit fallback, provenance, and default bidi isolation. |
+| Fluent formatter composition | `crates/mecojoni-core/tests/fluent_integration.rs` plus `crates/mecojoni-core/tests/fixtures/packages/fluent/` | Real `.ftl` resources receive typed Mecojoni arguments and prove English/Italian plurals, gender selects, explicit fallback, provenance, and default bidi isolation. |
 | Numeric/PRNG/profile vectors | `crates/mecojoni-core/tests/fixtures/expected/` | Exact cross-runtime values and policy constants. |
 | CLI process contract | `crates/mecojoni-cli/tests/` | Every command, stream, JSONL record, flag form, and status. |
 | v1 migration | `crates/mecojoni-cli/tests/fixtures/v1/` | Frozen reader, hazard diagnostics, compilable rewrite, honest output-set comparison. |

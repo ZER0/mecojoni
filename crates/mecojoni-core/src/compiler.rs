@@ -946,7 +946,7 @@ impl CompiledGrammar {
                                 arguments,
                                 argument_origins,
                                 sink,
-                                depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                                depth: depth.saturating_add(1),
                                 parent_trace: trace_node,
                             });
                         }
@@ -983,7 +983,7 @@ impl CompiledGrammar {
                                 arguments: Vec::new(),
                                 argument_origins: Vec::new(),
                                 sink,
-                                depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                                depth: depth.saturating_add(1),
                                 parent_trace: capture_trace,
                             });
                         }
@@ -1101,7 +1101,7 @@ impl CompiledGrammar {
                             &frames[frame].values,
                         )?,
                         sink: temporary_sink,
-                        depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                        depth: depth.saturating_add(1),
                         parent_trace: binding_trace_node,
                     });
                 }
@@ -2582,7 +2582,7 @@ fn validate_message_effects(rules: &mut [CompiledRule]) -> MecoResult<()> {
                             ),
                         ));
                     }
-                    CompiledPart::MessageCall { .. } | CompiledPart::RuleCall { rule: _, .. }
+                    CompiledPart::MessageCall { .. } | CompiledPart::RuleCall { .. }
                         if part_is_complete_message(part, &effects) && !effects[rule_index] =>
                     {
                         return Err(source_error(
@@ -4240,6 +4240,7 @@ fn runtime_error(code: DiagnosticCode, message: impl Into<String>) -> MecoError 
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::ToString, vec, vec::Vec};
+    use core::fmt::Write as _;
 
     use super::{
         GenerationLimits, GenerationRequest, compile_package, compile_package_with_manifest,
@@ -4771,10 +4772,12 @@ mod tests {
         )
         .to_string();
         for index in 0..10_u64 {
-            source.push_str(&format!(
-                "- [{}] value-{index}\n",
+            writeln!(
+                source,
+                "- [{}] value-{index}",
                 999_999_999_999_999_990_u64 + index
-            ));
+            )
+            .expect("string formatting cannot fail");
         }
         let error = compile_package(&package(&source)).expect_err("scaled sum must fail");
 

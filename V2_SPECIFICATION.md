@@ -1489,7 +1489,7 @@ content-WASM request and forbids runtime `.meco` or `.mecob` requests.
 - actual fallback locale is observable;
 - English and at least one locale with `few`/`many` exercise all categories;
 - the real `fluent-bundle` integration receives typed text, number, and enum
-  arguments and exercises gender plus `one`/`few`/`many`/`other` selection;
+  arguments and exercises gender plus English/Italian `one`/`other` selection;
 - the Fluent proof keeps default bidi isolation enabled and observes formatter
   environment provenance;
 - formatter resource and schema drift fails CI.

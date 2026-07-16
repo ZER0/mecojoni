@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+};
 
 /// Frozen `meco/1` terminal/reference representation used only by migration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -335,7 +338,7 @@ pub fn migrate_v1(source: &str, module_hint: &str) -> Result<MigrationReport, V1
         match item {
             V1Item::Comment { text, line } => {
                 let safe = text.replace("--", "- -");
-                output.push_str(&format!("\n<!-- {safe} -->\n"));
+                writeln!(output, "\n<!-- {safe} -->").expect("string formatting cannot fail");
                 diagnostics.push(MigrationDiagnostic {
                     code: "M_COMMENT_REWRITE",
                     line: *line,
@@ -343,11 +346,11 @@ pub fn migrate_v1(source: &str, module_hint: &str) -> Result<MigrationReport, V1
                 });
             }
             V1Item::Rule(rule) => {
-                output.push_str(&format!("\n# {}\n", rule.name));
+                writeln!(output, "\n# {}", rule.name).expect("string formatting cannot fail");
                 for production in &rule.productions {
                     output.push_str("- ");
                     if let Some(weight) = &production.weight {
-                        output.push_str(&format!("[{weight}] "));
+                        write!(output, "[{weight}] ").expect("string formatting cannot fail");
                     }
                     output.push_str(&render_parts(&production.parts));
                     output.push('\n');
@@ -469,7 +472,9 @@ fn render_parts(parts: &[V1Part]) -> String {
     for part in parts {
         match part {
             V1Part::Terminal(text) => rendered.push_str(&quoted_terminal(text)),
-            V1Part::Reference(name) => rendered.push_str(&format!("@{{{name}}}")),
+            V1Part::Reference(name) => {
+                write!(rendered, "@{{{name}}}").expect("string formatting cannot fail");
+            }
         }
     }
     rendered

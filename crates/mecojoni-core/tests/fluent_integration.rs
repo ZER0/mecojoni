@@ -171,7 +171,7 @@ fn real_fluent_resources_receive_typed_arguments_and_select_gender_and_plurals()
     };
     let grammar = compile_package_with_manifest(&package, &read_manifest(&directory))
         .expect("Fluent grammar and message schema compile");
-    let mut formatter = FluentTestFormatter::load(&directory, &["en-US", "pl-PL"]);
+    let mut formatter = FluentTestFormatter::load(&directory, &["en-US", "it-IT"]);
 
     let cases = [
         (
@@ -189,25 +189,25 @@ fn real_fluent_resources_receive_typed_arguments_and_select_gender_and_plurals()
             "\u{2068}Mr. \u{2068}Alex\u{2069}\u{2069} arrived with \u{2068}\u{2068}2\u{2069} items\u{2069}.",
         ),
         (
-            "pl-PL",
+            "it-IT",
             "Ada",
             1,
             "female",
-            "\u{2068}Pani \u{2068}Ada\u{2069} przybyła\u{2069} z \u{2068}jednym przedmiotem\u{2069}.",
+            "\u{2068}La viaggiatrice \u{2068}Ada\u{2069} è arrivata\u{2069} con \u{2068}un oggetto\u{2069}.",
         ),
         (
-            "pl-PL",
-            "Jan",
+            "it-IT",
+            "Luca",
             2,
             "male",
-            "\u{2068}Pan \u{2068}Jan\u{2069} przybył\u{2069} z \u{2068}\u{2068}2\u{2069} przedmiotami\u{2069}.",
+            "\u{2068}Il viaggiatore \u{2068}Luca\u{2069} è arrivato\u{2069} con \u{2068}\u{2068}2\u{2069} oggetti\u{2069}.",
         ),
         (
-            "pl-PL",
+            "it-IT",
             "Alex",
-            5,
+            3,
             "other",
-            "\u{2068}\u{2068}Alex\u{2069} przybyło\u{2069} z \u{2068}\u{2068}5\u{2069} przedmiotami\u{2069}.",
+            "\u{2068}La persona \u{2068}Alex\u{2069} è arrivata\u{2069} con \u{2068}\u{2068}3\u{2069} oggetti\u{2069}.",
         ),
     ];
 
@@ -244,16 +244,16 @@ fn real_fluent_resources_receive_typed_arguments_and_select_gender_and_plurals()
             },
             LocaleRequest {
                 requested: "fr-FR",
-                fallbacks: &["pl-PL", "en-US"],
+                fallbacks: &["it-IT", "en-US"],
             },
             &mut formatter,
         )
         .expect("explicit fallback resolves through Fluent");
     let trace = fallback.message().expect("fallback trace is recorded");
     assert_eq!(trace.requested_locale(), "fr-FR");
-    assert_eq!(trace.actual_locale(), "pl-PL");
+    assert_eq!(trace.actual_locale(), "it-IT");
     assert_eq!(
         fallback.text(),
-        "\u{2068}Pani \u{2068}Ada\u{2069} przybyła\u{2069} z \u{2068}\u{2068}2\u{2069} przedmiotami\u{2069}."
+        "\u{2068}La viaggiatrice \u{2068}Ada\u{2069} è arrivata\u{2069} con \u{2068}\u{2068}2\u{2069} oggetti\u{2069}."
     );
 }

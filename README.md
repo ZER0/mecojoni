@@ -615,9 +615,9 @@ contains no built-in plural engine.
 
 A filesystem-backed Rust integration test proves this generic boundary against
 the real `fluent-bundle` crate. Its `.meco` package passes text, exact integral
-number, and enum arguments into English and Polish `.ftl` resources; Fluent then
-selects grammatical gender and the `one`, `few`, `many`, and `other` cardinal
-categories. The same test checks ordered locale fallback, formatter provenance,
+number, and enum arguments into English and Italian `.ftl` resources; Fluent then
+selects grammatical gender and the `one` and `other` cardinal categories. The
+same test checks ordered locale fallback, formatter provenance,
 and Fluent's default bidirectional-isolation marks. `fluent-bundle` is strictly a
 test-only dependency, so the production core remains dependency-free and
 `#![no_std] + alloc`:

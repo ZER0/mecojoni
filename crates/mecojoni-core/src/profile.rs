@@ -45,7 +45,7 @@ impl LocationProfile {
 #[must_use]
 pub fn diversity_factor_16_16(descendants: u64) -> u32 {
     let descendants = descendants.max(1);
-    let floor_log2 = 63 - descendants.leading_zeros();
+    let floor_log2 = descendants.ilog2();
     let radicand = u64::from(floor_log2 + 1) << 32;
     u32::try_from(integer_sqrt(radicand))
         .unwrap_or(u32::MAX)
