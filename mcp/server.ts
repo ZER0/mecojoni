@@ -17,20 +17,44 @@ import { z } from "npm:zod@^3.25";
 /** Directory containing this file's parent, i.e. the repository root. */
 export const repoRoot = new URL("..", import.meta.url);
 
+export interface BinaryCandidate {
+  path: string;
+  mtimeMs: number;
+}
+
 /**
- * Locates the `meco` binary. Honors `MECO_BIN` first, then prefers a release
- * build over a debug build under the repository's own `target/` directory.
+ * Picks the most recently built binary from a set of candidates. Always
+ * preferring one build profile (e.g. release over debug) risks silently
+ * running a stale binary left over from an earlier build after only the
+ * other profile was rebuilt — `cargo build -p mecojoni-cli` (debug) and
+ * `cargo build -p mecojoni-cli --release` are independent artifacts, and
+ * a dev loop that only rebuilds one of them must not be shadowed by the other.
  */
+export function pickNewestBinary(candidates: BinaryCandidate[]): string {
+  if (candidates.length === 0) {
+    throw new Error(
+      "no meco binary found under target/{release,debug}/meco; " +
+        "run `cargo build -p mecojoni-cli` or set MECO_BIN",
+    );
+  }
+  return [...candidates].sort((left, right) => right.mtimeMs - left.mtimeMs)[0].path;
+}
+
+/** Locates the `meco` binary. Honors `MECO_BIN` first; see {@linkcode pickNewestBinary}. */
 export function resolveMecoBinary(): string {
   const fromEnv = Deno.env.get("MECO_BIN");
   if (fromEnv) return fromEnv;
-  const release = new URL("target/release/meco", repoRoot);
-  try {
-    if (Deno.statSync(release).isFile) return release.pathname;
-  } catch {
-    // fall through to the debug build
-  }
-  return new URL("target/debug/meco", repoRoot).pathname;
+  const candidates = ["target/release/meco", "target/debug/meco"]
+    .map((relative) => new URL(relative, repoRoot))
+    .flatMap((url) => {
+      try {
+        const info = Deno.statSync(url);
+        return info.isFile ? [{ path: url.pathname, mtimeMs: info.mtime?.getTime() ?? 0 }] : [];
+      } catch {
+        return [];
+      }
+    });
+  return pickNewestBinary(candidates);
 }
 
 /**

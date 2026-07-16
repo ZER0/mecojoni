@@ -4,6 +4,7 @@ import {
   createServer,
   getRegisteredTool,
   parseJsonl,
+  pickNewestBinary,
   resolveMecoBinary,
   resolvePath,
   runMeco,
@@ -20,6 +21,26 @@ Deno.test("resolveMecoBinary finds a built binary on this machine", () => {
   const path = resolveMecoBinary();
   const info = Deno.statSync(path);
   assert(info.isFile, `expected ${path} to be a file`);
+});
+
+Deno.test("pickNewestBinary prefers the more recently built profile regardless of order", () => {
+  const olderRelease = { path: "/target/release/meco", mtimeMs: 1_000 };
+  const newerDebug = { path: "/target/debug/meco", mtimeMs: 2_000 };
+  // Regression test: a stale release build must not shadow a freshly rebuilt
+  // debug binary just because it happens to be checked first.
+  assertEquals(pickNewestBinary([olderRelease, newerDebug]), newerDebug.path);
+  assertEquals(pickNewestBinary([newerDebug, olderRelease]), newerDebug.path);
+});
+
+Deno.test("pickNewestBinary throws a clear error when no binary exists", () => {
+  let threw = false;
+  try {
+    pickNewestBinary([]);
+  } catch (error) {
+    threw = true;
+    assertMatch((error as Error).message, /cargo build -p mecojoni-cli/);
+  }
+  assert(threw, "expected pickNewestBinary([]) to throw");
 });
 
 Deno.test("resolvePath resolves relative paths against the repository root", () => {

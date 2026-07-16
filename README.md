@@ -200,6 +200,21 @@ text; `&pickup-common` or `&pickup-alert` owns the complete rendered result.
 Add `entry: pickup` to a package root when it should have a default generation
 target. Mecojoni never guesses a default from the first rule or the order of `exports`.
 
+### Run the language walkthrough
+
+Run the Rust walkthrough to see Mecojoni parse the complete README syntax corpus
+and execute every branch of the host-persisted NPC-memory example. It prints rule
+names, generated text, selected productions, and deterministic work counters:
+
+```sh
+cargo +1.85.0 test -p mecojoni-core --test print_hello_generation -- --nocapture
+```
+
+The corpus is deliberately a parsing walkthrough: it places independent syntax
+examples with different localized-message schemas in one source block. The test
+therefore parses the full corpus and separately runs the executable
+`branching-memory` package for `unmet`, `cautious`, and `trusted` NPC paths.
+
 ## Complete example corpus
 
 The following source is the canonical syntax corpus. It intentionally places
