@@ -272,7 +272,7 @@ handle. TypeScript `snapshot()` and restore helpers use the same operations.
 
 ## CLI streams and statuses (`cli/1`)
 
-The optional `std` CLI implements this fixed matrix:
+The dependency-free optional `std` CLI implements this fixed matrix:
 
 | Mode/condition | stdout | stderr | status |
 | --- | --- | --- | ---: |
@@ -292,6 +292,6 @@ commit success.
 
 Commands accept both `--flag value` and `--flag=value`, never consume another
 flag as a missing value, reject unknown/duplicate scalar flags, and write help to
-stdout only when explicitly requested. `check`, `lint`, `generate`, `audit`,
-`manifest`, `migrate`, and `bench` follow this same contract. Subprocess fixtures
-in Milestone 9 must prove every row before `cli/1` is stable.
+stdout only when explicitly requested. `check`, `lint`, `generate`, `trace`,
+`audit`, `manifest`, `migrate`, `fmt`, and `bench` follow this same contract.
+Subprocess fixtures prove every row before `cli/1` is stable.

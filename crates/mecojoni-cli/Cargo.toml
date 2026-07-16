@@ -1,0 +1,17 @@
+[package]
+name = "mecojoni-cli"
+description = "Dependency-free std authoring and migration tools for Mecojoni v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "meco"
+path = "src/main.rs"
+
+[dependencies]
+mecojoni-core = { path = "../mecojoni-core" }
+
+[lints]
+workspace = true

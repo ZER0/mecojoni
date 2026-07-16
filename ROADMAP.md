@@ -231,18 +231,22 @@ do not blame unrelated deep rules, and snapshot restore reproduces the next outp
 
 Build tools only after the core contracts are stable.
 
-- [ ] Add an optional `std` CLI crate for check, generate, trace, lint, manifest,
+- [x] Add an optional `std` CLI crate for check, generate, trace, lint, manifest,
   audit, migrate, and bench workflows.
-- [ ] Keep filesystem and process behavior outside `mecojoni-core`.
-- [ ] Implement a source formatter proven not to alter output semantics.
-- [ ] Freeze a v1 reader and implement explicit v1-to-v2 migration.
-- [ ] Produce migration diagnostics for ambiguous whitespace, sigils, empty text,
+- [x] Keep filesystem and process behavior outside `mecojoni-core`.
+- [x] Implement a source formatter proven not to alter output semantics.
+- [x] Freeze a v1 reader and implement explicit v1-to-v2 migration.
+- [x] Produce migration diagnostics for ambiguous whitespace, sigils, empty text,
   comments, and weight-looking prose.
-- [ ] Add subprocess tests and real v1/v2 corpus comparisons.
-- [ ] Test text versus JSONL output, stdout/stderr separation, all defined exit
+- [x] Add subprocess tests and real v1/v2 corpus comparisons.
+- [x] Test text versus JSONL output, stdout/stderr separation, all defined exit
   statuses, and warning-failure thresholds.
-- [ ] Add initial editor grammar and language-server support if demanded by real
+- [x] Add initial editor grammar and language-server support if demanded by real
   authoring use.
+
+The checked-in TextMate grammar covers current lexical use. Semantic editor
+diagnostics invoke `meco check`; no real authoring requirement yet justifies a
+separate incremental LSP transport or a duplicate parser.
 
 **Exit gate:** checked-in v1 projects migrate explicitly, generated differences
 are reported honestly, and every CLI command has filesystem integration tests.

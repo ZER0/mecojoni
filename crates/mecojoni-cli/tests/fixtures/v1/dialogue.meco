@@ -1,0 +1,14 @@
+@meco 1
+@start greeting
+
+// Migrated greeting corpus.
+# greeting
+- [3] Hello, @name!
+- [1] Contact @name@@example.invalid for $5 & tea.
+- [1] @empty
+  - [1] spaced
+- [status] ready
+
+# name
+- Ada
+- Tomas

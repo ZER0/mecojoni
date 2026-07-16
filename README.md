@@ -19,8 +19,9 @@ and reliable long-running generation.
 > generation, and resolves complete localized messages through a synchronous host
 > formatter in Rust, Deno, and Chrome. Transactional `diverse/1`, span-aware
 > provenance, repetition audits, replay receipts, and versioned session/history
-> snapshots now run across Rust and WASM. The CLI and editor tooling remain
-> roadmap work. The original proof of concept and
+> snapshots now run across Rust and WASM. The dependency-free `std` authoring CLI,
+> explicit v1 migration, and initial editor grammar are also executable. Release
+> stabilization remains roadmap work. The original proof of concept and
 > its documentation live in
 > [`v1/`](v1/README.md).
 
@@ -725,8 +726,14 @@ sentence must adapt to locale-specific grammar.
 
 ## Migration from v1
 
-A migration tool should parse v1 with v1 semantics, then emit canonical v2 source.
-It should not silently reinterpret old files.
+The `meco migrate` command parses v1 with frozen v1 semantics, then emits explicit
+v2 source. It never silently reinterprets old files:
+
+```sh
+cargo +1.85.0 run -p mecojoni-cli -- \
+  migrate dialogue.meco --write dialogue.meco.md
+cargo +1.85.0 run -p mecojoni-cli -- check dialogue.meco.md
+```
 
 | V1 source | V2 migration |
 | --- | --- |
@@ -741,6 +748,34 @@ It should not silently reinterpret old files.
 Migration must diagnose constructs that cannot be preserved safely without a
 quoted or raw rewrite, especially significant whitespace and newly meaningful
 sigils.
+
+The tool reports that v1/v2 PRNG streams and diversity scoring are intentionally
+not sequence-compatible. See [MIGRATION_V1_TO_V2.md](MIGRATION_V1_TO_V2.md) for
+the exact rewrite and compatibility contract.
+
+## Authoring CLI and editor grammar
+
+The optional `mecojoni-cli` crate provides `check`, `generate`, `trace`, `lint`,
+`audit`, `manifest`, `migrate`, `fmt`, and `bench`. It recursively resolves imports
+from an explicit root while the portable core continues to perform no I/O.
+
+```sh
+cargo +1.85.0 run -p mecojoni-cli -- check npc.meco.md
+cargo +1.85.0 run -p mecojoni-cli -- \
+  generate npc.meco.md --seed 7 --data playerName=Rin
+cargo +1.85.0 run -p mecojoni-cli -- lint npc.meco.md --deny-warnings
+```
+
+Human output and `cli/1` JSONL have fixed stdout/stderr and exit-status contracts.
+Generation batches are buffered before output, so errors never leave partial
+success records. The initial formatter validates then preserves source byte for
+byte; this proves comments, edge spaces, and block chomp semantics cannot change
+while style-changing rules remain deliberately unspecified. Full CLI details are
+in [the CLI guide](crates/mecojoni-cli/README.md).
+
+[`editors/vscode/`](editors/vscode/README.md) supplies an initial TextMate grammar
+and language configuration. Semantic diagnostics use `meco check`; an LSP
+transport is deferred until real editor synchronization requirements justify it.
 
 ## Tooling and implementation direction
 
@@ -758,7 +793,8 @@ the initial v2 scope.
 The implementation should provide a parser with precise spans, an immutable
 compiled representation, typed Rust APIs, deterministic seeded sessions,
 structured errors, traces, corpus audits, a formatter boundary, and eventually
-language-server support. The runtime separates immutable grammar content from
+an LSP transport when editor synchronization requirements are known. The runtime
+separates immutable grammar content from
 mutable sampler history so nearby NPCs can share repetition memory without making
 every generator globally stateful.
 
@@ -786,8 +822,10 @@ V2_SPECIFICATION.md          Detailed v2 specification and implementation plan
 V2_SYNTAX.md                 Normative lexical and complete source grammar
 V2_INTERFACES.md             Package, WASM, JavaScript, and CLI contracts
 ROADMAP.md                   Phased implementation plan and completion gates
+MIGRATION_V1_TO_V2.md        Frozen v1 reader and honest migration contract
 Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
 crates/
+  mecojoni-cli/              Optional std authoring and migration CLI
   mecojoni-core/             Safe, dependency-free no_std + alloc core
     tests/fixtures/          Filesystem-backed integration corpus
   mecojoni-wasm/             Handwritten WASM ABI and target allocator
@@ -795,6 +833,7 @@ js/
   mecojoni.ts                Browser-neutral TypeScript wrapper
   mecojoni_test.ts           Normative Deno integration suite
   browser_smoke.*            Same-artifact browser integration harness
+editors/vscode/              TextMate grammar and editor configuration
 v1/
   README.md                  Original runnable v1 documentation
   src/                       V1 compiler, generator, audit, and CLI
@@ -824,9 +863,11 @@ Rust/Deno/Chrome corpus. Transactional `diverse/1` sessions, hard/soft cooldown,
 bounded exact/edge histories, winner-only commit, and cross-target deterministic
 sequences are executable as well. Stable production IDs, exact output provenance,
 overlap-only structural/rendered audits, copy-on-write snapshots, and replay
-receipts are executable through Rust and the Deno-tested WASM wrapper. A production
-Fluent adapter, compound value types, the CLI, and editor tooling remain to be built.
-Use v1 for features outside this v2 subset.
+receipts are executable through Rust and the Deno-tested WASM wrapper. The `std`
+CLI, frozen v1 migration, conservative formatter, subprocess contract suite, and
+initial editor grammar are executable as well. A production Fluent adapter,
+compound value types, and release stabilization remain to be built. Use v1 for
+features outside this v2 subset.
 
 ## Name
 

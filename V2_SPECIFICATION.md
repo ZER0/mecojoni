@@ -6,8 +6,9 @@
 > typed request/guard/binding runtime, complete-message formatter boundary,
 > transactional `diverse/1` sessions and histories, stable provenance, overlap-only
 > audits, replay receipts, copy-on-write snapshots, package boundary, handwritten
-> WASM ABI, and Deno/browser wrapper are implemented; completion is tracked in
-> `ROADMAP.md`.
+> WASM ABI, Deno/browser wrapper, dependency-free `std` CLI, frozen v1 migration,
+> conservative formatter, and initial editor grammar are implemented; completion
+> is tracked in `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -1274,9 +1275,9 @@ control; the portable core performs no I/O and keeps no ambient snapshot registr
 
 ### CLI and editor workflow
 
-If a `std` CLI is added, use a small well-tested argument layer. Support
-conventional `--flag=value` syntax, reject a flag consumed as another flag's
-value, and keep messages consistent.
+The optional dependency-free `std` CLI uses a small well-tested argument layer.
+Support conventional `--flag=value` syntax, reject a flag consumed as another
+flag's value, and keep messages consistent.
 
 The CLI has two output modes: `text` (the default) and `jsonl`. In `text` mode,
 `meco generate` writes each returned generated text value followed by exactly one
@@ -1297,19 +1298,25 @@ records are versioned CLI contracts.
 
 The CLI is an author/build tool, not a per-line game API:
 
-- `meco check` — parse, type-check, graph-check, and validate catalogs;
+- `meco check` — parse, type-check, graph-check, and validate a supplied message schema;
 - `meco lint` — authoring, recursion, composition, and scale warnings;
-- `meco generate` — deterministic samples and traces;
-- `meco audit` — structural/rendered repetition reports per locale;
+- `meco generate` / `meco trace` — deterministic samples and derivation traces;
+- `meco audit` — structural/rendered repetition reports over generated text;
 - `meco manifest` — stable message/input schema export;
+- `meco migrate` — frozen-reader v1-to-v2 source migration with compatibility notes;
+- `meco fmt` — conservative semantics-preserving source validation/formatting;
 - `meco bench` — representative local workload profiles.
 
 Commands that operate on generated content accept `--entry <qualified-rule>` for
 an explicit public entry; without it they use the optional root front-matter
 `entry`, and diagnose a missing selection if the root has no default.
 
-An official formatter and language server should consume the same lexer and
-diagnostic codes. The formatter must never alter output semantics invisibly.
+The executable `format/1` boundary consumes the same parser and returns validated
+source byte for byte, so it cannot alter comments, quoted edge spaces, or block
+chomp semantics. Style-changing rewrites remain unspecified. The initial TextMate
+grammar covers lexical authoring; semantic editor diagnostics invoke `meco check`.
+An LSP transport remains conditional on real incremental synchronization demand
+and must consume the same parser and diagnostic codes rather than duplicating them.
 
 ## Performance design
 
@@ -1572,8 +1579,8 @@ pass, with committed performance baselines.
 
 - Emitting capture/reuse, ordered non-emitting bindings, typed
   parameters, readable restricted guards, and multi-module authoring conventions.
-- Source formatter that preserves semantics, linter, and initial language-server
-  support.
+- Source formatter that preserves semantics, linter, initial editor grammar, and
+  check-based semantic diagnostics; an LSP transport only when demanded.
 - Decide feature-record syntax from actual agreement corpora rather than guessing.
 
 **Exit:** a multi-file grammar can reuse selected text consistently, prepare one or

@@ -1,0 +1,27 @@
+{
+  "name": "mecojoni-language",
+  "displayName": "Mecojoni Language",
+  "description": "Syntax highlighting and editor defaults for Mecojoni v2",
+  "version": "0.0.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mecojoni",
+        "aliases": ["Mecojoni", "meco"],
+        "extensions": [".meco", ".meco.md"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mecojoni",
+        "scopeName": "source.mecojoni",
+        "path": "./syntaxes/mecojoni.tmLanguage.json"
+      }
+    ]
+  }
+}
