@@ -155,6 +155,26 @@ details.
 The syntax in this README is authoritative. `SPECIFICATION.md` must be updated
 with every syntax change; if the documents temporarily disagree, this README wins.
 
+## MCP server
+
+Mecojoni includes an [MCP](https://modelcontextprotocol.io) server that exposes
+the `meco` CLI to MCP-compatible agents. It provides tools for checking,
+generating, tracing, formatting, auditing, and compiling Mecojoni sources and
+artifacts while keeping compiler behavior in the CLI and `mecojoni-core`.
+
+Build the CLI, then run the server with Deno 2.x:
+
+```sh
+cargo +1.85.0 build -p mecojoni-cli --release
+deno run --allow-read --allow-run --allow-env=MECO_BIN,MECO_PROJECT_ROOT \
+  /absolute/path/to/mecojoni/mcp/server.ts
+```
+
+The server restricts source and artifact paths to `MECO_PROJECT_ROOT` (the
+repository root by default). See the [MCP server guide](mcp/README.md) for the
+tool list, configuration examples for common MCP clients, and development
+commands.
+
 ## Quick start
 
 Mecojoni source begins with a small, strict front-matter header. This sample has no
