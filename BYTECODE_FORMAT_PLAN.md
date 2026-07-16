@@ -425,9 +425,9 @@ Extend `cli/1` additively:
 
 ```sh
 meco compile-artifact root.meco \
-  --manifest messages.manifest \
+  --messages messages.manifest \
   --profile full \
-  --output root.mecob
+  --write root.mecob
 
 meco inspect-artifact root.mecob
 meco verify-artifact root.mecob
@@ -439,10 +439,10 @@ loader as `check`, compiles it, encodes canonical bytes, decodes those bytes, an
 runs an equivalence sanity check before writing atomically. It never writes a
 partial artifact after diagnostics.
 
-`inspect-artifact` reports versions, hashes, profile, sizes, counts, entries,
-inputs, and message schemas without executing grammar content. JSONL output uses
-versioned integer/string fields and never serializes numbers through lossy JSON
-floating point.
+`inspect-artifact` reports versions, hashes, profile, sizes, counts, entries, and
+the default entry without executing grammar content. JSONL output uses versioned
+integer/string fields and never serializes numbers through lossy JSON floating
+point.
 
 ## WASM and TypeScript plan
 

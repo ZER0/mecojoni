@@ -47,6 +47,90 @@ opens it without a content fetch; the generic WASM returns a capability error.
 The Chrome smoke test asserts that the content build requests neither `.meco`
 nor `.mecob` at runtime.
 
+## Build, test, and deploy
+
+Run all commands below from the repository root. Rust 1.85 with the
+`wasm32-unknown-unknown` target and Deno are required; Chrome or Chromium is
+optional for the browser tests.
+
+### Build the generic WASM runtime
+
+The generic build contains the runtime but no application grammar:
+
+```sh
+deno task wasm:build
+cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown --release
+```
+
+The release artifact is
+`target/wasm32-unknown-unknown/release/mecojoni_wasm.wasm`.
+
+### Run the JavaScript and WASM tests
+
+```sh
+deno task js:check
+deno task wasm:test
+deno task wasm:browser:test
+```
+
+`wasm:test` runs the Deno integration corpus. `wasm:browser:test` bundles the
+same browser-neutral wrapper and exercises external source and `.mecob` loading
+in headless Chrome when an installed browser is available. The complete Rust,
+`no_std`, WASM, documentation, Deno, and browser release gate is listed in
+[`CONFORMANCE.md`](CONFORMANCE.md).
+
+### Compile a package to `.mecob`
+
+The CLI resolves every import from the root module and writes one canonical,
+fully resolved artifact:
+
+```sh
+cargo +1.85.0 run -p mecojoni-cli -- \
+  compile-artifact path/to/root.meco \
+  --profile full \
+  --write target/content.mecob
+
+cargo +1.85.0 run -p mecojoni-cli -- inspect-artifact target/content.mecob
+cargo +1.85.0 run -p mecojoni-cli -- verify-artifact target/content.mecob
+```
+
+Add `--messages path/to/messages.manifest` when the package emits complete
+localized messages. The exact container is specified in
+[`BYTECODE_FORMAT.md`](BYTECODE_FORMAT.md); all artifact commands are documented
+in the [CLI guide](crates/mecojoni-cli/README.md).
+
+### Embed the artifact in one content-specific WASM
+
+Point the WASM build at an already compiled artifact. An absolute path is
+recommended because relative paths are resolved from `crates/mecojoni-wasm`:
+
+```sh
+MECO_EMBEDDED_ARTIFACT=/absolute/path/to/content.mecob \
+CARGO_TARGET_DIR=target/content-wasm \
+cargo +1.85.0 build -p mecojoni-wasm \
+  --target wasm32-unknown-unknown \
+  --release
+```
+
+The content-bearing binary is
+`target/content-wasm/wasm32-unknown-unknown/release/mecojoni_wasm.wasm`.
+After instantiation, call `openEmbeddedGrammar()`; it returns the ordinary
+disposable grammar handle. A generic build instead returns
+`E_BYTECODE_CAPABILITY`.
+
+The repository's ready-made embedded conformance build uses the Harbor fixture:
+
+```sh
+deno task wasm:embedded:test
+deno task wasm:embedded:browser:test
+```
+
+The browser test proves that the content-specific application requests one WASM
+file and no separate `.meco` or `.mecob`. See the
+[WASM crate guide](crates/mecojoni-wasm/README.md) and
+[JavaScript wrapper guide](js/README.md) for ABI ownership and application API
+details.
+
 The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
 with every syntax change; if the documents temporarily disagree, this README wins.
 

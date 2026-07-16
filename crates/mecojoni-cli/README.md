@@ -4,7 +4,7 @@
 `mecojoni-core`. Filesystem traversal, process exit statuses, clocks used by
 benchmarks, and terminal streams live here and never enter the portable core.
 
-Experimental artifact commands compile complete filesystem packages atomically,
+Frozen `bytecode/1` commands compile complete filesystem packages atomically,
 inspect and verify hostile `.mecob` input, and generate through the same runtime:
 
 ```sh
