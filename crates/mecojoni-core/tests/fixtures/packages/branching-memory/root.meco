@@ -1,0 +1,29 @@
+---
+meco: 1.0
+module: npc
+entry: encounter
+
+types:
+  NpcPath: [unmet, cautious, trusted]
+
+inputs:
+  npcPath: NpcPath
+exports: [encounter]
+---
+
+# encounter
+- {npcPath is unmet} I do not know you yet.
+- {npcPath is cautious} @cautious-encounter
+- {npcPath is trusted} @trusted-encounter
+
+# cautious-encounter
+- Keep your voice down. @cautious-decision
+
+# cautious-decision
+- We should wait for daylight.
+
+# trusted-encounter
+- Good to see you again. @trusted-decision
+
+# trusted-decision
+- Let us start with the old signal tower.

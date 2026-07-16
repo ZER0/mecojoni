@@ -153,6 +153,44 @@ fn single_file_package(relative: &str) -> PackageInput {
     }
 }
 
+#[test]
+fn filesystem_fixture_models_branching_with_host_persisted_npc_memory() {
+    let package = single_file_package("packages/branching-memory/root.meco");
+    let grammar = compile_package(&package).expect("branching-memory fixture compiles");
+
+    // This value represents the host application's saved NPC record. Mecojoni
+    // reads it as an input for each independent generation; it never mutates it.
+    let mut saved_npc_path = "unmet";
+    let generate = |npc_path: &str| {
+        let data = [DataBinding::new(
+            "npcPath".to_string(),
+            Value::Enum(npc_path.to_string()),
+        )];
+        grammar
+            .generate_weighted(&GenerationRequest {
+                data: &data,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect("branching-memory fixture generates")
+    };
+
+    assert_eq!(generate(saved_npc_path).text(), "I do not know you yet.");
+
+    // A player action changes the host-owned record. The next request enters
+    // the corresponding rule-call branch and follows it to its decision.
+    saved_npc_path = "cautious";
+    assert_eq!(
+        generate(saved_npc_path).text(),
+        "Keep your voice down. We should wait for daylight."
+    );
+
+    saved_npc_path = "trusted";
+    assert_eq!(
+        generate(saved_npc_path).text(),
+        "Good to see you again. Let us start with the old signal tower."
+    );
+}
+
 struct FixtureFormatter {
     catalogs: Vec<(String, Vec<(String, String)>)>,
 }

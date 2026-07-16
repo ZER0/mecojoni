@@ -13,6 +13,9 @@ multiple independent errors. Cooked and raw block fixtures assert both normalize
 text and parsed interpolation parts. Compiler fixtures cover host-resolved
 multi-file packages, visibility and cycle failures, fixed weighted seed corpora,
 relative-frequency checks, and a 2,048-rule heap-stack chain.
+The `branching-memory` package demonstrates a host-owned persisted NPC path:
+separate requests supply `unmet`, `cautious`, and `trusted` inputs, while rule
+calls traverse the selected branch within each generation.
 Milestone 6 adds a typed message manifest, English and Polish-style plural
 catalogs, explicit fallback coverage, missing-ID/schema-drift failures, and a
 filesystem-backed synchronous test formatter. Catalog syntax is deliberately a
