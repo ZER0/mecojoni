@@ -359,6 +359,56 @@ pub struct CompiledGrammar {
 }
 
 impl CompiledGrammar {
+    /// Verifies the immutable lowered representation shared by all loaders.
+    pub(crate) fn validate_lowered_invariants(&self) -> MecoResult<()> {
+        let rule_count = self.rules.len();
+        if self.entries.iter().any(|(_, rule)| *rule >= rule_count)
+            || self.default_entry.is_some_and(|rule| rule >= rule_count)
+        {
+            return Err(runtime_error(
+                DiagnosticCode::BYTECODE_CORRUPT,
+                "lowered entry references a missing rule",
+            ));
+        }
+        for rule in &self.rules {
+            if let Some(selection) = &rule.static_selection {
+                if selection.cumulative.len() != rule.productions.len()
+                    || selection.cumulative.last().copied() != Some(selection.total)
+                    || selection.total == 0
+                    || !selection
+                        .cumulative
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1])
+                {
+                    return Err(runtime_error(
+                        DiagnosticCode::BYTECODE_CORRUPT,
+                        "lowered static-selection index is inconsistent",
+                    ));
+                }
+            }
+            for production in &rule.productions {
+                if production
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.rule >= rule_count)
+                    || production.parts.iter().any(|part| match part {
+                        CompiledPart::RuleCall { rule, .. }
+                        | CompiledPart::Capture { rule, .. } => *rule >= rule_count,
+                        CompiledPart::Literal { .. }
+                        | CompiledPart::Value { .. }
+                        | CompiledPart::MessageCall { .. } => false,
+                    })
+                {
+                    return Err(runtime_error(
+                        DiagnosticCode::BYTECODE_CORRUPT,
+                        "lowered production references a missing rule",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Stable content hash of canonical package sources, resolutions, and manifest.
     #[must_use]
     pub const fn artifact_hash(&self) -> u64 {
@@ -1546,7 +1596,7 @@ pub fn compile_package_with_manifest(
     analyze_graph(&mut rules, &entries)?;
     prepare_diversity_metadata(&mut rules);
     let warnings = recursion_warnings(&rules);
-    Ok(CompiledGrammar {
+    let grammar = CompiledGrammar {
         artifact_hash: package_artifact_hash(package, manifest),
         rules,
         inputs,
@@ -1554,7 +1604,9 @@ pub fn compile_package_with_manifest(
         default_entry,
         warnings,
         message_manifest: manifest.clone(),
-    })
+    };
+    grammar.validate_lowered_invariants()?;
+    Ok(grammar)
 }
 
 fn package_artifact_hash(package: &PackageInput, manifest: &MessageManifest) -> u64 {

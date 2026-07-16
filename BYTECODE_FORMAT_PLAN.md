@@ -555,7 +555,7 @@ latency promise is inferred from one machine.
 | Milestone | Status |
 | --- | --- |
 | B0 — Reopen with evidence | Complete |
-| B1 — Lowered IR boundary | Pending |
+| B1 — Lowered IR boundary | Complete |
 | B2 — Experimental `bytecode/0` | Pending |
 | B3 — Complete semantics | Pending |
 | B4 — CLI and external WASM | Pending |

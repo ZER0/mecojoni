@@ -1389,7 +1389,7 @@ using a warm session.
 | Test and benchmark evidence is incomplete | Conformance, property, fuzz, CLI, localization, memory, and committed benchmark suites | CI quality gates below |
 | `varied` is surprising as a default | Explicit grammar/API strategy; conservative weighted default | No stateful policy is selected implicitly |
 | Source is the only specification | Normative EBNF/lexical spec and parser-independent fixtures | A second parser can pass the same conformance corpus |
-| Serialized IR and bytecode are experimental; streaming is absent | Keep source authoritative; gate `bytecode/0` behind strict verification and representative measurements | [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md) and recorded cross-runtime evidence |
+| Serialized IR and bytecode are experimental; streaming is absent | Keep source authoritative; pass source compilation and artifact decoding through the immutable `lowered-ir/1` invariant boundary | [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md), semantic golden contracts, and recorded cross-runtime evidence |
 
 ## Verification strategy
 

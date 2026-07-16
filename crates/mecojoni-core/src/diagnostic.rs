@@ -74,6 +74,12 @@ impl DiagnosticCode {
     pub const LIMIT_OUTPUT: Self = Self("E_LIMIT_OUTPUT");
     pub const SAMPLER_BUDGET: Self = Self("E_SAMPLER_BUDGET");
     pub const RECURSION_RISK: Self = Self("W_RECURSION_RISK");
+    pub const BYTECODE_MAGIC: Self = Self("E_BYTECODE_MAGIC");
+    pub const BYTECODE_VERSION: Self = Self("E_BYTECODE_VERSION");
+    pub const BYTECODE_CORRUPT: Self = Self("E_BYTECODE_CORRUPT");
+    pub const BYTECODE_LIMIT: Self = Self("E_BYTECODE_LIMIT");
+    pub const BYTECODE_CONTRACT: Self = Self("E_BYTECODE_CONTRACT");
+    pub const BYTECODE_CAPABILITY: Self = Self("E_BYTECODE_CAPABILITY");
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {

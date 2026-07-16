@@ -4,6 +4,12 @@
 compiler and runtime. Hosts own files, import resolution, seeds, typed data,
 localized formatter resources, persistence, clocks, and concurrency ordering.
 
+Source compilation constructs one private immutable `lowered-ir/1` grammar.
+Every construction path validates rule indexes, entries, production references,
+and cached static selections before generation can observe it. Public artifact
+policy types define bounded `full`, `mapped`, and `stripped` profiles for the
+experimental `bytecode/0` implementation.
+
 ```rust
 use mecojoni_core::{
     GenerationRequest, PackageInput, PackageSource, SourceFile, SourceId,

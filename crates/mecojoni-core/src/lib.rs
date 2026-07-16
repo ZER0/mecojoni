@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod artifact;
 mod ast;
 mod audit;
 mod compiler;
@@ -22,6 +23,9 @@ mod source;
 mod span;
 mod value;
 
+pub use artifact::{
+    ArtifactDebugProfile, ArtifactLimits, ArtifactOptions, BYTECODE_VERSION, LOWERED_IR_CONTRACT,
+};
 pub use ast::{
     ArgumentSyntax, BindingSyntax, BlockChomp, BlockSyntax, BodyPartSyntax, BodySyntax, CallSyntax,
     ClauseSyntax, GuardExpression, GuardValue, ModuleSyntax, ParameterSyntax, ProductionSyntax,
