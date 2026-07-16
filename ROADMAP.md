@@ -285,7 +285,8 @@ compatibility contracts are versioned, and the release gate in
 - Unicode identifiers and NFC normalization.
 - Typed feature records for internally generated grammatical agreement.
 - A standards-based localization adapter package.
-- Serialized compiled artifacts and streaming generation.
+- Serialized compiled artifacts and streaming generation; see the conditional
+  [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md).
 - Persistent external repetition stores.
 - Bindings for additional host languages.
 

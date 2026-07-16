@@ -830,6 +830,7 @@ COMPATIBILITY.md             Frozen language/runtime/ABI compatibility policy
 CONFORMANCE.md               Cross-runtime fixture and release test index
 BENCHMARKS.md                Native/WASM workloads and optimization evidence
 RELEASE.md                   Distribution release checklist
+BYTECODE_FORMAT_PLAN.md      Deferred compiled-artifact and embedding plan
 Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
 crates/
   mecojoni-benchmarks/       Native operation/allocation workload harness
@@ -880,7 +881,8 @@ precomputed cumulative indexes, and production-ID collision checks are
 `O(n log n)`; both optimizations have committed native/WASM evidence. A production
 Fluent adapter and compound value records are explicitly deferred extensions, not
 unimplemented v2 release promises. See [COMPATIBILITY.md](COMPATIBILITY.md),
-[CONFORMANCE.md](CONFORMANCE.md), and [RELEASE.md](RELEASE.md).
+[CONFORMANCE.md](CONFORMANCE.md), [RELEASE.md](RELEASE.md), and the explicitly
+deferred [bytecode plan](BYTECODE_FORMAT_PLAN.md).
 
 ## Name
 
