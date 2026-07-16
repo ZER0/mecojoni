@@ -255,16 +255,26 @@ are reported honestly, and every CLI command has filesystem integration tests.
 
 Optimize only measured workloads and prepare a stable release.
 
-- [ ] Commit representative flat, tree, chain, dense, recursive, and large-fanout
+- [x] Commit representative flat, tree, chain, dense, recursive, and large-fanout
   benchmarks.
-- [ ] Track operation counts and allocation behavior across native and WASM
+- [x] Track operation counts and allocation behavior across native and WASM
   targets.
-- [ ] Optimize graph passes, selection indexes, histories, or serialization only
+- [x] Optimize graph passes, selection indexes, histories, or serialization only
   when a committed workload justifies the complexity.
-- [ ] Decide whether compiled artifact serialization is needed.
-- [ ] Freeze language, sampler, ABI, snapshot, and diagnostic compatibility rules.
-- [ ] Publish Rust API documentation, JavaScript/TypeScript documentation,
+- [x] Decide whether compiled artifact serialization is needed.
+- [x] Freeze language, sampler, ABI, snapshot, and diagnostic compatibility rules.
+- [x] Publish Rust API documentation, JavaScript/TypeScript documentation,
   conformance fixtures, examples, and migration guidance.
+
+`workloads/1` freezes six native/WASM operation contracts and measures native
+allocations plus WASM linear memory, handles, and host-visible allocations. The
+measured fan-out bottleneck justified a cumulative selection index and
+`O(n log n)` production-ID validation; both preserve the frozen seed mapping.
+Compiled-artifact serialization is deferred by
+[`docs/decisions/0001-defer-compiled-artifacts.md`](docs/decisions/0001-defer-compiled-artifacts.md).
+See [`BENCHMARKS.md`](BENCHMARKS.md), [`COMPATIBILITY.md`](COMPATIBILITY.md),
+[`CONFORMANCE.md`](CONFORMANCE.md), and [`RELEASE.md`](RELEASE.md) for the
+evidence and stable-release gates.
 
 **Exit gate:** every retained optimization has before/after evidence, all public
 compatibility contracts are versioned, and the release gate in

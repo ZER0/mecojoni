@@ -8,9 +8,10 @@
   },
   "tasks": {
     "wasm:build": "cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown",
-    "wasm:test": "deno task wasm:build && deno test --allow-read js/mecojoni_test.ts",
+    "wasm:test": "deno task wasm:build && deno test --allow-read js/mecojoni_test.ts js/workloads_test.ts",
+    "wasm:bench": "cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown --release && deno run --allow-read js/workloads_bench.ts",
     "wasm:browser:bundle": "deno bundle --platform=browser js/browser_smoke.ts -o target/browser-smoke.js",
     "wasm:browser:test": "deno task wasm:build && deno task wasm:browser:bundle && deno test --allow-read --allow-net=127.0.0.1 --allow-run --allow-env=MECO_BROWSER js/browser_test.ts",
-    "js:check": "deno fmt --check deno.json js && deno check js/mecojoni.ts js/mecojoni_test.ts js/browser_smoke.ts js/browser_test.ts js/browser_server.ts"
+    "js:check": "deno fmt --check deno.json js && deno check js/mecojoni.ts js/mecojoni_test.ts js/workloads.ts js/workloads_test.ts js/workloads_bench.ts js/browser_smoke.ts js/browser_test.ts js/browser_server.ts"
   }
 }

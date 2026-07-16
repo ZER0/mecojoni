@@ -25,6 +25,9 @@ Milestone 8 adds stable authored/content-addressed production identities, a
 filesystem package with host/bound/message provenance, overlap-only rendered and
 structural audits, the reachable `composition/1` contract, copy-on-write sensitive
 history snapshots, replay receipts, and nonempty Rust/WASM/Deno restore tests.
+Milestone 10 reuses the real Milestone 5 package as a deterministic byte/scalar
+mutation corpus. Hundreds of replacements and truncations must either decode and
+return parser diagnostics or reject UTF-8 without panicking.
 
 Tests must read these artifacts through `std::fs`. The production core receives
 owned source modules from the host and never performs filesystem I/O.

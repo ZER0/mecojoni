@@ -295,6 +295,26 @@ fn external_message_schema_is_loaded_for_check_and_manifest_export() {
     assert!(report.contains("\"name\":\"name\",\"type\":\"text\""));
 }
 
+#[test]
+fn published_single_and_multimodule_examples_run_from_the_filesystem() {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let hello = workspace.join("examples/hello.meco.md");
+    let npc = workspace.join("examples/npc/root.meco.md");
+    for arguments in [
+        vec!["generate", hello.to_str().unwrap(), "--seed=7"],
+        vec![
+            "generate",
+            npc.to_str().unwrap(),
+            "--seed=7",
+            "--data=playerName=Rin",
+        ],
+    ] {
+        let output = meco(&arguments);
+        assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+        assert!(!output.stdout.is_empty());
+    }
+}
+
 fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "mecojoni-cli-{}-{}-{name}",

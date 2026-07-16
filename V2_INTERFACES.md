@@ -1,7 +1,10 @@
 # Mecojoni v2 Host Interface Contracts
 
-This document freezes the host-facing boundaries that later roadmap milestones
-implement. `README.md` remains authoritative for language syntax,
+Compatibility guarantees for these versioned surfaces are indexed in
+[`COMPATIBILITY.md`](COMPATIBILITY.md).
+
+This document freezes the implemented host-facing boundaries. `README.md`
+remains authoritative for language syntax,
 `V2_SYNTAX.md` formalizes parsing, and `V2_SPECIFICATION.md` owns runtime
 semantics.
 
@@ -125,6 +128,8 @@ The final adapter exports:
 ```text
 u32  meco_alloc(u32 length, u32 alignment)
 void meco_dealloc(u32 pointer, u32 length, u32 alignment)
+u32  meco_live_allocation_count()
+u32  meco_live_allocation_bytes()
 ```
 
 `0` is the null/failure pointer. Alignment is a nonzero power of two no greater
@@ -138,6 +143,11 @@ allocator preconditions. Ergonomic wrapper APIs never expose raw pointers.
 
 The adapter uses `dlmalloc` only on `wasm32`; the safe core remains allocator-
 agnostic and dependency-free.
+
+The two telemetry exports count only host-visible buffers created by `meco_alloc`,
+not allocator-internal blocks. They are additive ABI-1 diagnostics used with the
+existing live-handle counter and linear-memory page size to prove disposal and
+warm-memory behavior; they do not expose pointers or mutable state.
 
 ### Calls, wire payloads, and handles
 

@@ -1,6 +1,6 @@
 use alloc::{
     boxed::Box,
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     format,
     string::{String, ToString},
     vec,
@@ -328,8 +328,22 @@ struct CompiledRule {
     parameters: Vec<(String, ValueType)>,
     span: Span,
     productions: Vec<CompiledProduction>,
+    static_selection: Option<StaticSelection>,
     analysis: RuleAnalysis,
     message_effect: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StaticSelection {
+    cumulative: Vec<u64>,
+    total: u64,
+}
+
+impl StaticSelection {
+    fn select(&self, choice: u64) -> usize {
+        debug_assert!(choice < self.total);
+        self.cumulative.partition_point(|upper| *upper <= choice)
+    }
 }
 
 /// Immutable, indexed package artifact.
@@ -386,6 +400,12 @@ impl CompiledGrammar {
     #[must_use]
     pub fn rule_count(&self) -> usize {
         self.rules.len()
+    }
+
+    /// Total number of immutable compiled alternatives in the package.
+    #[must_use]
+    pub fn production_count(&self) -> usize {
+        self.rules.iter().map(|rule| rule.productions.len()).sum()
     }
 
     #[must_use]
@@ -966,17 +986,33 @@ impl CompiledGrammar {
                         values: arguments,
                         origins: argument_origins,
                     });
-                    let mut weighted =
-                        eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
-                    if let Some(state) = diversity.as_deref_mut() {
-                        weighted = diverse_eligible_weights(compiled_rule, weighted, state)?;
-                    }
-                    let total = weighted
-                        .iter()
-                        .try_fold(0_u64, |sum, weight| sum.checked_add(weight.normalized))
-                        .ok_or_else(|| {
-                            weight_runtime_overflow("eligible weight total overflowed")
-                        })?;
+                    let fast_static = diversity.is_none() && !request.trace_selections;
+                    let mut weighted = None;
+                    let total = if fast_static {
+                        compiled_rule
+                            .static_selection
+                            .as_ref()
+                            .map(|selection| selection.total)
+                    } else {
+                        None
+                    };
+                    let total = if let Some(total) = total {
+                        total
+                    } else {
+                        let mut eligible =
+                            eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
+                        if let Some(state) = diversity.as_deref_mut() {
+                            eligible = diverse_eligible_weights(compiled_rule, eligible, state)?;
+                        }
+                        let total = eligible
+                            .iter()
+                            .try_fold(0_u64, |sum, weight| sum.checked_add(weight.normalized))
+                            .ok_or_else(|| {
+                                weight_runtime_overflow("eligible weight total overflowed")
+                            })?;
+                        weighted = Some(eligible);
+                        total
+                    };
                     let used = u32::try_from(random.words()).unwrap_or(u32::MAX);
                     let remaining = request.limits.max_sampler_words.saturating_sub(used);
                     let choice = random
@@ -990,7 +1026,16 @@ impl CompiledGrammar {
                                 ),
                             )
                         })?;
-                    let production = select_eligible_production(&weighted, choice);
+                    let production = weighted.as_ref().map_or_else(
+                        || {
+                            compiled_rule
+                                .static_selection
+                                .as_ref()
+                                .expect("fast static selection was prepared at compilation")
+                                .select(choice)
+                        },
+                        |eligible| select_eligible_production(eligible, choice),
+                    );
                     if let Some(state) = diversity.as_deref_mut() {
                         state.record(
                             &compiled_rule.name,
@@ -1003,6 +1048,8 @@ impl CompiledGrammar {
                             u32::try_from(production).unwrap_or(u32::MAX),
                             compiled_rule.productions[production].id.clone(),
                             weighted
+                                .as_ref()
+                                .expect("selection tracing uses the full eligible set")
                                 .iter()
                                 .map(|weight| {
                                     EligibleWeightTrace::new(
@@ -1384,6 +1431,7 @@ pub fn compile_package_with_manifest(
                 rule.name.value()
             );
             let mut productions = Vec::<CompiledProduction>::with_capacity(rule.productions.len());
+            let mut production_ids = BTreeMap::<String, Span>::new();
             for production in &rule.productions {
                 let mut scope = CompileScope {
                     module: module_index,
@@ -1436,7 +1484,7 @@ pub fn compile_package_with_manifest(
                 )?;
                 validate_bound_value_usage(production.span, &bindings, &parts)?;
                 let id = stable_production_id(&qualified_rule, production);
-                if let Some(previous) = productions.iter().find(|candidate| candidate.id == id) {
+                if let Some(previous_span) = production_ids.insert(id.clone(), production.span) {
                     return Err(MecoError::with_related(
                         Diagnostic::new(
                             DiagnosticCode::PRODUCTION_ID,
@@ -1447,7 +1495,7 @@ pub fn compile_package_with_manifest(
                         [Diagnostic::new(
                             DiagnosticCode::PRODUCTION_ID,
                             Severity::Error,
-                            Some(previous.span),
+                            Some(previous_span),
                             "the colliding production is here",
                         )],
                     ));
@@ -1463,12 +1511,13 @@ pub fn compile_package_with_manifest(
                     diversity_factor_16_16: 1 << 16,
                 });
             }
-            validate_static_weight_budget(rule.span, &productions)?;
+            let static_selection = prepare_static_selection(rule.span, &productions)?;
             rules.push(CompiledRule {
                 name: qualified_rule,
                 parameters: rule_parameters[global_rule].clone(),
                 span: rule.span,
                 productions,
+                static_selection,
                 analysis: RuleAnalysis {
                     reachable: false,
                     productive: false,
@@ -2927,7 +2976,10 @@ fn resolve_rule(
     Ok(offsets[target_module] + local)
 }
 
-fn validate_static_weight_budget(span: Span, productions: &[CompiledProduction]) -> MecoResult<()> {
+fn prepare_static_selection(
+    span: Span,
+    productions: &[CompiledProduction],
+) -> MecoResult<Option<StaticSelection>> {
     let Some(rationals) = productions
         .iter()
         .map(|production| match production.weight {
@@ -2936,10 +2988,24 @@ fn validate_static_weight_budget(span: Span, productions: &[CompiledProduction])
         })
         .collect::<Option<Vec<_>>>()
     else {
-        return Ok(());
+        return Ok(None);
     };
-    let _ = normalize_rationals(&rationals, Some(span))?;
-    Ok(())
+    let normalized = normalize_rationals(&rationals, Some(span))?;
+    if productions
+        .iter()
+        .any(|production| production.guard.is_some())
+    {
+        return Ok(None);
+    }
+    let mut total = 0_u64;
+    let mut cumulative = Vec::with_capacity(normalized.len());
+    for weight in normalized {
+        total = total
+            .checked_add(weight)
+            .ok_or_else(|| weight_overflow_at(Some(span)))?;
+        cumulative.push(total);
+    }
+    Ok(Some(StaticSelection { cumulative, total }))
 }
 
 fn normalize_rationals(rationals: &[Rational], source_span: Option<Span>) -> MecoResult<Vec<u64>> {
@@ -3985,6 +4051,44 @@ mod tests {
         assert!(matches!(first.text(), "A" | "B"));
         assert_eq!(first.expansions(), 1);
         assert_eq!(first.sampler_words(), 1);
+    }
+
+    #[test]
+    fn cached_static_fanout_preserves_traced_selection_and_seed_mapping() {
+        let mut source = concat!(
+            "---\nmeco: 2\nmodule: root\nentry: line\nexports: [line]\n---\n\n",
+            "# line\n",
+        )
+        .to_string();
+        for index in 0..1_024 {
+            use core::fmt::Write as _;
+            writeln!(source, "- alternative-{index}").expect("write source");
+        }
+        let grammar = compile_package(&package(&source)).expect("fanout package compiles");
+        assert!(grammar.rules[0].static_selection.is_some());
+
+        for seed in 0..64 {
+            let fast = grammar
+                .generate_weighted(&GenerationRequest::with_seed(seed))
+                .expect("cached generation succeeds");
+            let mut traced_request = GenerationRequest::with_seed(seed);
+            traced_request.trace_selections = true;
+            let traced = grammar
+                .generate_weighted(&traced_request)
+                .expect("traced generation succeeds");
+            assert_eq!(fast.text(), traced.text());
+            assert_eq!(fast.sampler_words(), traced.sampler_words());
+            assert_eq!(traced.selections().len(), 1);
+            assert_eq!(
+                traced.selections()[0].selected_production_id(),
+                grammar
+                    .production_id(
+                        "root.line",
+                        traced.selections()[0].selected_production() as usize
+                    )
+                    .expect("selected production has an ID")
+            );
+        }
     }
 
     #[test]

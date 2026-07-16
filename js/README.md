@@ -83,6 +83,7 @@ Build and run the normative Deno integration suite from the repository root:
 ```sh
 deno task js:check
 deno task wasm:test
+deno task wasm:bench
 ```
 
 The browser test bundles that same wrapper, serves the same debug WASM artifact and checked-in
@@ -98,6 +99,9 @@ should dispose grammars in `finally` blocks. Result handles and temporary linear
 always disposed internally. The allocator may retain its high-water memory pages for reuse; the
 lifecycle test warms it once, runs 100 compile/generate/dispose cycles, requires zero live handles
 after every cycle, and permits at most one additional 64 KiB page after warm-up.
+`liveAllocationCount` and `liveAllocationBytes` expose host-visible ABI buffer telemetry; both must
+return to zero after each wrapper call. The shared `workloads/1` suite also checks native/WASM
+expansions, sampler words, text, and warm-memory behavior for six representative graph shapes.
 
 The currently executable language subset is documented in the root README. Typed request data,
 guards, dynamic weights, calls, captures, bindings, complete-message manifests, explicit locale

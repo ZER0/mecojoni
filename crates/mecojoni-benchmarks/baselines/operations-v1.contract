@@ -1,0 +1,7 @@
+version|scenario|source_bytes|rules|productions|artifact_hash|expansions|sampler_words|text
+workloads/1|flat-64|1166|1|64|8575cbe4265308c7|1|1|alternative-47
+workloads/1|tree-dialogue|414|5|17|2b6375a0bb999ba1|5|5|The pilot catalogued the old radio under the bridge.
+workloads/1|chain-512|8073|513|513|71ad3dfa6c98d0f0|513|513|terminal
+workloads/1|dense-dag-96x8|5855|97|734|2e16f7cbfe71e926|21|21|terminal
+workloads/1|recursive-balanced|139|1|3|37652cf96d664a88|1|1|()
+workloads/1|fanout-10000|188983|1|10000|6ec8a38a9dca8fa7|1|1|alternative-7535

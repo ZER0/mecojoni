@@ -989,6 +989,40 @@ fn cli_contract_fixture_covers_every_stream_and_status_class() {
 }
 
 #[test]
+fn deterministic_filesystem_mutation_corpus_never_panics_or_accepts_invalid_utf8() {
+    let path = fixture_path("packages/milestone5/root.meco.md");
+    let original = fs::read(&path).expect("read canonical mutation seed");
+    let replacements = [0_u8, b'@', b'#', b'"', 0x7f, 0xff];
+    let step = (original.len() / 128).max(1);
+    let mut case = 0_u32;
+    for offset in (0..original.len()).step_by(step) {
+        for replacement in replacements {
+            let mut mutated = original.clone();
+            mutated[offset] = replacement;
+            if let Ok(source) = SourceFile::from_utf8(
+                SourceId::new(case),
+                format!("mutation-{case}.meco.md"),
+                &mutated,
+            ) {
+                let _ = parse_module(&source);
+            }
+            case = case.saturating_add(1);
+        }
+    }
+    for length in (0..original.len()).step_by(step) {
+        if let Ok(source) = SourceFile::from_utf8(
+            SourceId::new(case),
+            format!("truncated-{length}.meco.md"),
+            &original[..length],
+        ) {
+            let _ = parse_module(&source);
+        }
+        case = case.saturating_add(1);
+    }
+    assert!(case >= 800, "mutation corpus unexpectedly small");
+}
+
+#[test]
 fn unicode_terminal_text_and_crlf_normalization_match_from_a_real_fixture() {
     let path = fixture_path("valid/unicode-terminal.meco.md");
     let lf = fs::read_to_string(&path).expect("read Unicode fixture");

@@ -1,14 +1,15 @@
 # Mecojoni v2 Specification and Runtime Design
 
-> This document is the target design, not a claim that every feature already
-> exists. The portable workspace, complete recovering source parser, immutable
+> This document is the implemented v2 design; explicitly deferred extensions are
+> labeled as such. The portable workspace, complete recovering source parser, immutable
 > package compiler, iterative `weighted/1` generator, deterministic primitives,
 > typed request/guard/binding runtime, complete-message formatter boundary,
 > transactional `diverse/1` sessions and histories, stable provenance, overlap-only
 > audits, replay receipts, copy-on-write snapshots, package boundary, handwritten
 > WASM ABI, Deno/browser wrapper, dependency-free `std` CLI, frozen v1 migration,
-> conservative formatter, and initial editor grammar are implemented; completion
-> is tracked in `ROADMAP.md`.
+> conservative formatter, initial editor grammar, committed native/WASM workloads,
+> and compatibility/release contracts are implemented. Completion evidence is
+> tracked in `ROADMAP.md`, `BENCHMARKS.md`, and `CONFORMANCE.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -679,8 +680,8 @@ For finite enum/boolean domains, a rule may opt into `exhaustive` coverage check
 Overlap is legal; the compiler instead warns about impossible or fully subsumed
 productions. For open numeric/text domains it reports unproven coverage, and
 generation returns `E_NO_ELIGIBLE_PRODUCTION` if a valid request leaves a referenced
-rule with no eligible production. Static alias tables are used only when
-eligibility is known at preparation time; guarded choices use the strategy's
+rule with no eligible production. Cumulative static-weight indexes are used only
+when eligibility is known at preparation time; guarded choices use the strategy's
 dynamic selection path.
 
 For generated agreement, a later feature-record extension can let a production
@@ -742,7 +743,7 @@ Under `weighted/1`, an evaluated value is the exact relative weight. Under
 `diverse/1`, it is the base weight before hard-gap filtering, soft cooldown, and
 diversity adjustment. The authored expression, evaluated rational value, and final
 effective weight are recorded in traces and replay receipts. A dynamic-weight rule
-cannot use a precomputed static alias table.
+cannot use a precomputed cumulative index.
 
 - Under `weighted/1`, they are exact relative probabilities.
 - Under `diverse/1`, they are priors modified by documented structural cooldown,
@@ -1093,7 +1094,10 @@ and replay hashes.
   incompatible schemas.
 - Production fallback follows an explicit ordered locale chain and returns both
   requested and actual locale. It never fails silently.
-- Bidi isolation remains enabled by default.
+- Bidi isolation is formatter-owned: a production localization adapter must keep
+  its formatter's isolation enabled by default and expose any opt-out explicitly.
+  The generic Mecojoni boundary cannot infer which returned spans came from
+  interpolated values and therefore does not rewrite formatter output.
 - Arbitrary name inflection is not promised. The host supplies required forms, an
   authored term supplies facets, or the translation avoids the unavailable form.
 
@@ -1327,7 +1331,7 @@ to speculative bytecode or an optimizer:
 - lazy sampler-specific preparation;
 - precomputed immutable diversity factors;
 - bounded rational/fixed-point weight preparation;
-- alias tables for static high-fan-out weighted rules when useful;
+- cumulative indexes plus binary search for static high-fan-out weighted rules;
 - one fragment/tokenization pass per candidate;
 - cached formatting within a generation call;
 - explicit-stack expansion and array builders;
@@ -1379,7 +1383,7 @@ using a warm session.
 | Graph algorithms scale poorly on dense/chain cases | SCC and reverse-dependency work queues | Committed flat/tree/chain/dense scaling benchmarks |
 | Random mode pays varied-only work | Lazy strategy preparation | Construction profile shows no diversity work for weighted sessions |
 | Candidate fragments and factors are recomputed | Store fragments on candidates; precompute invariant factors | Allocation/profile regression tests |
-| Very large production fan-out is linear and costly | Static alias option, explicit complexity, linter/hierarchy guidance | 10–50,000 alternative benchmark tracked without universal claims |
+| Very large production fan-out is linear and costly | Static cumulative index, binary search, `O(n log n)` ID validation, and hierarchy guidance | The 10,000-alternative workload retains seed mapping while tracking time/allocation evidence |
 | CLI parsing and per-line spawning are fragile | Standard parser; CLI positioned for humans/builds; warm library API | Subprocess argument tests and cold-vs-warm benchmark |
 | API lacks types and stable docs | Typed Rust API plus handwritten JavaScript wrapper and TypeScript declarations over a versioned WASM ABI | Rust API tests, TypeScript type tests, ABI tests, and generated documentation |
 | Test and benchmark evidence is incomplete | Conformance, property, fuzz, CLI, localization, memory, and committed benchmark suites | CI quality gates below |
@@ -1465,14 +1469,13 @@ using a warm session.
 - missing IDs, arguments, locale bundles, and fallback bundles fail as configured;
 - actual fallback locale is observable;
 - English and at least one locale with `few`/`many` exercise all categories;
-- two different message IDs resolving to the same visible text are detected in
-  rendered-novelty mode;
-- bidi isolation remains enabled and is covered by fixtures;
 - formatter resource and schema drift fails CI.
-- formatter purity/environment manifests and actual-locale history namespaces are
-  verified across fallback and catalog changes.
-- a non-replayable formatter call cannot change the next replayable rendered
-  selection or any exported replay-state hash.
+
+A future production localization adapter extends this generic boundary suite with
+adapter-owned fixtures for bidi isolation, formatter-backed rendered-novelty
+namespaces, resource/environment changes, and non-replayable responses. The
+generic test formatter does not claim the typography, caching, or security policy
+of that deferred adapter.
 
 ### Committed benchmarks
 
@@ -1486,6 +1489,13 @@ Track medians and memory ranges for:
 - formatter-heavy candidate search in multiple locales;
 - audit sample scaling and trace depth;
 - CLI cold start versus warm in-process reuse.
+
+The first frozen `workloads/1` suite commits the six representative graph/fan-out
+shapes required for release plus native allocation counts, WASM linear-memory and
+ABI-allocation telemetry, and exact cross-target operation contracts. Existing
+profile fixtures separately pin history eviction, formatter work, audit behavior,
+and CLI cold-subprocess versus warm-library semantics. Timing extensions for a
+production localization adapter remain deferred with that adapter.
 
 Adversarial and realistic workloads must be labeled separately. A benchmark result
 without a committed fixture and environment record is investigative evidence, not
@@ -1593,10 +1603,11 @@ until feature records are implemented.
 ### Phase 4 — Add the localization boundary
 
 - Stable external message references and argument manifests.
-- Generic formatter interface and optional Fluent adapter.
+- Generic formatter interface; a standards-based production adapter remains
+  deferred.
 - Locale fallback, validation, manifest/extraction tools, and per-locale audits.
-- Candidate formatting cache, formatter-backed rendered-novelty mode, and
-  per-locale resolved audits.
+- Candidate formatting caches, formatter-backed rendered novelty, and per-locale
+  resolved audits remain part of that deferred adapter milestone.
 
 **Exit:** a player name and count safely produce correct English and a locale with
 `few`/`many`; missing translations and schema drift fail CI.

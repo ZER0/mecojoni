@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/mecojoni-benchmarks",
     "crates/mecojoni-cli",
     "crates/mecojoni-core",
     "crates/mecojoni-wasm",

@@ -4,6 +4,7 @@
     allow(dead_code, unused_imports)
 )]
 #![deny(unsafe_op_in_unsafe_fn)]
+#![doc = include_str!("../README.md")]
 
 extern crate alloc;
 
@@ -1391,13 +1392,31 @@ mod wasm_memory {
     pub extern "C" fn meco_live_handle_count() -> u32 {
         with_state(|state| u32::try_from(state.handles.len()).unwrap_or(u32::MAX))
     }
+
+    /// Number of host-visible linear-memory input/output allocations not released.
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn meco_live_allocation_count() -> u32 {
+        with_state(|state| u32::try_from(state.allocations.len()).unwrap_or(u32::MAX))
+    }
+
+    /// Logical bytes in host-visible allocations, saturated to the ABI's `u32`.
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn meco_live_allocation_bytes() -> u32 {
+        with_state(|state| {
+            state.allocations.iter().fold(0_u32, |total, allocation| {
+                total.saturating_add(allocation.length)
+            })
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm_memory::{
-    meco_alloc, meco_call, meco_dealloc, meco_handle_dispose, meco_live_handle_count,
-    meco_result_payload_copy, meco_result_payload_length, meco_result_status,
-    meco_result_value_handle,
+    meco_alloc, meco_call, meco_dealloc, meco_handle_dispose, meco_live_allocation_bytes,
+    meco_live_allocation_count, meco_live_handle_count, meco_result_payload_copy,
+    meco_result_payload_length, meco_result_status, meco_result_value_handle,
 };
 
 #[cfg(all(target_arch = "wasm32", not(test)))]

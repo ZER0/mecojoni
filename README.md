@@ -8,22 +8,22 @@
 
 # Mecojoni v2
 
-Mecojoni v2 is a design for a readable, typed, modular language
-for generative dialogue and text. It retains the useful core of a weighted
-context-free grammar—headings define rules and list items define alternatives—
+Mecojoni v2 is a readable, typed, modular language for generative dialogue and
+text. It retains the useful core of a weighted context-free grammar—headings
+define rules and list items define alternatives—
 while adding the structure needed for game data, conditions, reuse, localization,
 and reliable long-running generation.
 
-> **Status:** v2 is under active implementation. The dependency-free core now
-> parses and compiles complete packages, executes exact typed `weighted/1`
-> generation, and resolves complete localized messages through a synchronous host
-> formatter in Rust, Deno, and Chrome. Transactional `diverse/1`, span-aware
+> **Status:** the v2 roadmap implementation is feature-complete. The
+> dependency-free core parses and compiles complete packages, executes exact typed
+> `weighted/1` generation, and resolves complete localized messages through a
+> synchronous host formatter in Rust, Deno, and Chrome. Transactional `diverse/1`, span-aware
 > provenance, repetition audits, replay receipts, and versioned session/history
 > snapshots now run across Rust and WASM. The dependency-free `std` authoring CLI,
-> explicit v1 migration, and initial editor grammar are also executable. Release
-> stabilization remains roadmap work. The original proof of concept and
-> its documentation live in
-> [`v1/`](v1/README.md).
+> explicit v1 migration, initial editor grammar, committed native/WASM workloads,
+> and frozen compatibility contracts are also executable. The crates remain
+> unpublished pending the owner's distribution version and license choice. The
+> original proof of concept and its documentation live in [`v1/`](v1/README.md).
 
 The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
 with every syntax change; if the documents temporarily disagree, this README wins.
@@ -558,7 +558,7 @@ the absolute numerator and positive denominator are each at most `2^63 - 1`.
 Decimal literals contain at most 18 digits and an optional exponent from `-18` to
 `18`; an operation or per-rule scaled total outside the budget is an error rather
 than a floating-point approximation. Version `splitmix64/1` supplies the seeded
-random stream, whose fixed vectors are shared by Rust and the future Deno wrapper.
+random stream, whose fixed vectors are shared by Rust and the Deno/WASM wrapper.
 
 An entire production containing `""` emits nothing:
 
@@ -777,29 +777,28 @@ in [the CLI guide](crates/mecojoni-cli/README.md).
 and language configuration. Semantic diagnostics use `meco check`; an LSP
 transport is deferred until real editor synchronization requirements justify it.
 
-## Tooling and implementation direction
+## Tooling and implementation
 
 The primary implementation is Rust. Its core is `#![no_std]` plus `alloc`,
 with no filesystem, network, clock, thread-runtime, environment, or operating-system
 randomness assumptions. Hosts provide source modules, seeds, data, formatter
-results, and persistence explicitly. The core should begin with no external
-dependencies and isolate any unavoidable unsafe code outside it.
+results, and persistence explicitly. The core has no external dependencies and
+forbids unsafe code; the WASM adapter isolates the target allocator.
 
 JavaScript support targets `wasm32-unknown-unknown` through a dependency-light,
 handwritten linear-memory ABI and JavaScript/TypeScript wrapper for Deno and
 browsers. The WASM adapter supplies its global allocator. A C API is not part of
 the initial v2 scope.
 
-The implementation should provide a parser with precise spans, an immutable
-compiled representation, typed Rust APIs, deterministic seeded sessions,
-structured errors, traces, corpus audits, a formatter boundary, and eventually
-an LSP transport when editor synchronization requirements are known. The runtime
-separates immutable grammar content from
-mutable sampler history so nearby NPCs can share repetition memory without making
-every generator globally stateful.
+The implementation provides a parser with precise spans, an immutable compiled
+representation, typed Rust APIs, deterministic seeded sessions, structured
+errors, traces, corpus audits, and a formatter boundary. An LSP transport remains
+deferred until editor synchronization requirements are known. The runtime
+separates immutable grammar content from mutable sampler history so nearby NPCs
+can share repetition memory without making every generator globally stateful.
 
 The production core remains `no_std + alloc`, while unit-test harnesses and
-integration tests may use `std`. Integration tests should load checked-in `.meco`
+integration tests may use `std`. Integration tests load checked-in `.meco`
 packages from the filesystem, exercise real imports, and compare exact diagnostics
 and deterministic seeded results. Deno and browser harnesses test the compiled
 WASM interface.
@@ -823,8 +822,13 @@ V2_SYNTAX.md                 Normative lexical and complete source grammar
 V2_INTERFACES.md             Package, WASM, JavaScript, and CLI contracts
 ROADMAP.md                   Phased implementation plan and completion gates
 MIGRATION_V1_TO_V2.md        Frozen v1 reader and honest migration contract
+COMPATIBILITY.md             Frozen language/runtime/ABI compatibility policy
+CONFORMANCE.md               Cross-runtime fixture and release test index
+BENCHMARKS.md                Native/WASM workloads and optimization evidence
+RELEASE.md                   Distribution release checklist
 Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
 crates/
+  mecojoni-benchmarks/       Native operation/allocation workload harness
   mecojoni-cli/              Optional std authoring and migration CLI
   mecojoni-core/             Safe, dependency-free no_std + alloc core
     tests/fixtures/          Filesystem-backed integration corpus
@@ -834,6 +838,8 @@ js/
   mecojoni_test.ts           Normative Deno integration suite
   browser_smoke.*            Same-artifact browser integration harness
 editors/vscode/              TextMate grammar and editor configuration
+examples/                    Checked single- and multi-module examples
+docs/decisions/              Evidence-backed architecture decisions
 v1/
   README.md                  Original runnable v1 documentation
   src/                       V1 compiler, generator, audit, and CLI
@@ -865,9 +871,12 @@ sequences are executable as well. Stable production IDs, exact output provenance
 overlap-only structural/rendered audits, copy-on-write snapshots, and replay
 receipts are executable through Rust and the Deno-tested WASM wrapper. The `std`
 CLI, frozen v1 migration, conservative formatter, subprocess contract suite, and
-initial editor grammar are executable as well. A production Fluent adapter,
-compound value types, and release stabilization remain to be built. Use v1 for
-features outside this v2 subset.
+initial editor grammar are executable as well. Static trace-off weighted rules use
+precomputed cumulative indexes, and production-ID collision checks are
+`O(n log n)`; both optimizations have committed native/WASM evidence. A production
+Fluent adapter and compound value records are explicitly deferred extensions, not
+unimplemented v2 release promises. See [COMPATIBILITY.md](COMPATIBILITY.md),
+[CONFORMANCE.md](CONFORMANCE.md), and [RELEASE.md](RELEASE.md).
 
 ## Name
 

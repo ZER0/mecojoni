@@ -36,6 +36,8 @@ interface WasmExports extends WebAssembly.Exports {
   meco_result_payload_copy(result: number, destination: number, capacity: number): number;
   meco_handle_dispose(handle: number): void;
   meco_live_handle_count(): number;
+  meco_live_allocation_count(): number;
+  meco_live_allocation_bytes(): number;
 }
 
 export interface ResolvedImport {
@@ -377,6 +379,17 @@ export class Mecojoni {
     return this.#exports.meco_live_handle_count();
   }
 
+  /** Outstanding host-visible ABI buffers; wrapper calls return this to zero. */
+  get liveAllocationCount(): number {
+    return this.#exports.meco_live_allocation_count();
+  }
+
+  /** Logical bytes in outstanding host-visible ABI buffers. */
+  get liveAllocationBytes(): number {
+    return this.#exports.meco_live_allocation_bytes();
+  }
+
+  /** Current high-water-capable WebAssembly linear-memory size in bytes. */
   get linearMemoryBytes(): number {
     return this.#exports.memory.buffer.byteLength;
   }
