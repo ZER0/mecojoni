@@ -8,7 +8,8 @@
 > audits, replay receipts, copy-on-write snapshots, package boundary, handwritten
 > WASM ABI, Deno/browser wrapper, dependency-free `std` CLI, frozen v1 migration,
 > conservative formatter, initial editor grammar, committed native/WASM workloads,
-> and compatibility/release contracts are implemented. Completion evidence is
+> frozen `bytecode/1` source/external/embedded loading, and compatibility/release
+> contracts are implemented. Completion evidence is
 > tracked in `ROADMAP.md`, `BENCHMARKS.md`, and `CONFORMANCE.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
@@ -1389,12 +1390,13 @@ using a warm session.
 | Test and benchmark evidence is incomplete | Conformance, property, fuzz, CLI, localization, memory, and committed benchmark suites | CI quality gates below |
 | `varied` is surprising as a default | Explicit grammar/API strategy; conservative weighted default | No stateful policy is selected implicitly |
 | Source is the only specification | Normative EBNF/lexical spec and parser-independent fixtures | A second parser can pass the same conformance corpus |
-| Serialized IR and bytecode are experimental; streaming is absent | Keep source authoritative; pass source compilation and artifact decoding through the immutable `lowered-ir/1` invariant boundary | [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md), semantic golden contracts, and recorded cross-runtime evidence |
+| Owned bytecode increases format and decoder surface; streaming is absent | Keep source authoritative; freeze only the measured owned format and pass source compilation/artifact decoding through the immutable `lowered-ir/1` invariant boundary | [`BYTECODE_FORMAT.md`](BYTECODE_FORMAT.md), semantic golden contracts, hostile-input suites, and recorded cross-runtime evidence |
 
-Experimental `bytecode/0` now preserves the complete v2 runtime contract,
-including dynamic expressions, bindings, messages, provenance, diverse state,
-snapshots, and replay identity. This implementation fact does not freeze the
-container; milestone B6 remains the compatibility decision.
+Frozen `bytecode/1` preserves the complete v2 runtime contract, including
+dynamic expressions, bindings, messages, provenance, diverse state, snapshots,
+and replay identity. Its normative container layout and compatibility policy live in
+[`BYTECODE_FORMAT.md`](BYTECODE_FORMAT.md) and
+[`COMPATIBILITY.md`](COMPATIBILITY.md).
 
 CLI-1 additively provides `compile-artifact`, `inspect-artifact`,
 `verify-artifact`, and `generate-artifact`. ABI-1 operations 14 and 15 provide

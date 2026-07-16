@@ -24,7 +24,7 @@ async function run(): Promise<void> {
   });
   const artifactMetadata = meco.inspectArtifact(artifactBytes);
   if (!artifactMetadata.ok) throw new Error(artifactMetadata.error.message);
-  if (artifactMetadata.value.version !== "bytecode/0") {
+  if (artifactMetadata.value.version !== "bytecode/1") {
     throw new Error(`unexpected artifact version ${artifactMetadata.value.version}`);
   }
   const artifact = meco.loadArtifact(artifactBytes);

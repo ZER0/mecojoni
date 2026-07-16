@@ -1,9 +1,9 @@
 use std::{fs, path::PathBuf};
 
 use mecojoni_core::{
-    ArtifactDebugProfile, ArtifactLimits, ArtifactOptions, GenerationRequest, PackageInput,
-    PackageSource, ResolvedImport, SourceFile, SourceId, compile_package, decode_artifact,
-    disassemble_artifact, encode_artifact, inspect_artifact,
+    ArtifactDebugProfile, ArtifactLimits, ArtifactOptions, DiagnosticCode, GenerationRequest,
+    PackageInput, PackageSource, ResolvedImport, SourceFile, SourceId, compile_package,
+    decode_artifact, disassemble_artifact, encode_artifact, inspect_artifact,
 };
 
 fn weighted_package(reverse_modules: bool) -> PackageInput {
@@ -80,9 +80,66 @@ fn filesystem_weighted_package_is_canonical_and_artifact_equivalent() {
         assert!(
             disassemble_artifact(&bytes, ArtifactLimits::default())
                 .expect("disassemble")
-                .starts_with("bytecode/0")
+                .starts_with("bytecode/1")
         );
     }
+}
+
+#[test]
+fn canonical_artifacts_do_not_depend_on_host_source_ids() {
+    let canonical = compile_package(&weighted_package(false)).expect("compile canonical package");
+    let mut reassigned = weighted_package(true);
+    reassigned.modules[0].source = SourceFile::new(
+        SourceId::new(91),
+        reassigned.modules[0].source.name(),
+        reassigned.modules[0].source.text(),
+    );
+    reassigned.modules[1].source = SourceFile::new(
+        SourceId::new(37),
+        reassigned.modules[1].source.name(),
+        reassigned.modules[1].source.text(),
+    );
+    let reassigned = compile_package(&reassigned).expect("compile reassigned package");
+
+    assert_eq!(
+        encode_artifact(&canonical, ArtifactOptions::default()).expect("encode canonical"),
+        encode_artifact(&reassigned, ArtifactOptions::default()).expect("encode reassigned")
+    );
+}
+
+#[test]
+fn debug_profiles_change_only_header_declaration_and_content_hash() {
+    let grammar = compile_package(&weighted_package(false)).expect("compile weighted package");
+    let encode = |debug_profile| {
+        encode_artifact(&grammar, ArtifactOptions { debug_profile }).expect("encode profile")
+    };
+    let full = encode(ArtifactDebugProfile::Full);
+    let mapped = encode(ArtifactDebugProfile::Mapped);
+    let stripped = encode(ArtifactDebugProfile::Stripped);
+
+    assert_eq!(&full[104..], &mapped[104..]);
+    assert_eq!(&full[104..], &stripped[104..]);
+    assert_ne!(&full[12..16], &mapped[12..16]);
+    assert_ne!(&mapped[12..16], &stripped[12..16]);
+    assert_ne!(&full[48..56], &mapped[48..56]);
+    assert_ne!(&mapped[48..56], &stripped[48..56]);
+}
+
+#[test]
+fn canonicalization_still_rejects_duplicate_module_ids() {
+    let mut duplicate = weighted_package(true);
+    duplicate.modules[0].canonical_id = duplicate.modules[1].canonical_id.clone();
+    duplicate.modules[0].source = SourceFile::new(
+        SourceId::new(91),
+        duplicate.modules[0].source.name(),
+        duplicate.modules[0].source.text(),
+    );
+
+    let error = compile_package(&duplicate).expect_err("duplicate module IDs must fail");
+    assert_eq!(
+        error.diagnostics()[0].code(),
+        DiagnosticCode::PACKAGE_DUPLICATE_MODULE
+    );
 }
 
 #[test]

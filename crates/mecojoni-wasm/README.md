@@ -5,7 +5,7 @@ the target global allocator, validates every linear-memory range, uses monotonic
 opaque handles, returns ordinary language failures as wire results, and requires
 explicit disposal.
 
-ABI-1 operations 14 and 15 load and inspect externally supplied `bytecode/0`
+ABI-1 operations 14 and 15 load and inspect externally supplied `bytecode/1`
 bytes. Loaded artifacts return the ordinary grammar handle, so all weighted,
 typed, message, diverse, snapshot, disposal, and telemetry APIs remain shared.
 

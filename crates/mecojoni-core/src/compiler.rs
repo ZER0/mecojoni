@@ -14,8 +14,9 @@ use crate::{
     GuardExpression, GuardValue, InputDefinition, LocaleRequest, MecoError, MecoResult,
     MessageDefinition, MessageManifest, MessageTrace, ModuleSyntax, OutputRange, PackageInput,
     PackageManifest, ProductionSyntax, ProvenanceKind, ProvenanceNode, Rational, SchemaType,
-    SelectionTrace, Severity, Span, SplitMix64, Value, ValueSyntax, WeightExpression, WeightSyntax,
-    diversity_factor_16_16, location_cooldown_multiplier, parse_module, validate_package_input,
+    SelectionTrace, Severity, SourceFile, SourceId, Span, SplitMix64, Value, ValueSyntax,
+    WeightExpression, WeightSyntax, diversity_factor_16_16, location_cooldown_multiplier,
+    parse_module, validate_package_input,
 };
 
 /// Compatibility identifier for independent exact weighted selection.
@@ -1586,18 +1587,49 @@ pub fn compile_package_with_manifest(
     manifest: &MessageManifest,
 ) -> MecoResult<CompiledGrammar> {
     validate_message_manifest(manifest)?;
-    validate_package_input(package)?;
-    if !package
-        .modules
-        .windows(2)
-        .all(|pair| pair[0].canonical_id < pair[1].canonical_id)
-    {
+    let canonical_order = package.modules.windows(2).all(|pair| {
+        let left = (
+            pair[0].canonical_id != package.root_id,
+            pair[0].canonical_id.as_str(),
+        );
+        let right = (
+            pair[1].canonical_id != package.root_id,
+            pair[1].canonical_id.as_str(),
+        );
+        left <= right
+    });
+    let canonical_source_ids = package.modules.iter().enumerate().all(|(index, module)| {
+        module.source.id().get() == u32::try_from(index).unwrap_or(u32::MAX)
+    });
+    if !canonical_order || !canonical_source_ids {
         let mut canonical = package.clone();
-        canonical
-            .modules
-            .sort_by(|left, right| left.canonical_id.cmp(&right.canonical_id));
+        canonical.modules.sort_by(|left, right| {
+            let left_key = (
+                left.canonical_id != package.root_id,
+                left.canonical_id.as_str(),
+            );
+            let right_key = (
+                right.canonical_id != package.root_id,
+                right.canonical_id.as_str(),
+            );
+            left_key.cmp(&right_key)
+        });
+        for (index, module) in canonical.modules.iter_mut().enumerate() {
+            let source_id = u32::try_from(index).map_err(|_| {
+                runtime_error(
+                    DiagnosticCode::PACKAGE_DUPLICATE_MODULE,
+                    "package contains more than u32::MAX modules",
+                )
+            })?;
+            module.source = SourceFile::new(
+                SourceId::new(source_id),
+                module.source.name(),
+                module.source.text(),
+            );
+        }
         return compile_package_with_manifest(&canonical, manifest);
     }
+    validate_package_input(package)?;
     let mut modules = Vec::with_capacity(package.modules.len());
     for package_source in &package.modules {
         modules.push(ModuleBuild {

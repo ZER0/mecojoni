@@ -12,7 +12,7 @@
     "wasm:bench": "cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown --release && deno run --allow-read js/workloads_bench.ts",
     "v1:bench": "deno run --allow-read js/v1_workloads_bench.ts",
     "wasm:browser:bundle": "deno bundle --platform=browser js/browser_smoke.ts -o target/browser-smoke.js",
-    "wasm:browser:test": "deno task wasm:build && deno task wasm:browser:bundle && deno test --allow-read --allow-net=127.0.0.1 --allow-run --allow-env=MECO_BROWSER js/browser_test.ts",
+    "wasm:browser:test": "deno task wasm:build && deno task wasm:browser:bundle && deno test --allow-read --allow-net=127.0.0.1 --allow-run --allow-env=MECO_BROWSER,MECO_EMBEDDED_BROWSER js/browser_test.ts",
     "wasm:embedded:build": "MECO_EMBEDDED_ARTIFACT=../../benchmarks/artifacts/harbor.mecob CARGO_TARGET_DIR=target/embedded cargo +1.85.0 build -p mecojoni-wasm --target wasm32-unknown-unknown",
     "wasm:embedded:test": "deno task wasm:embedded:build && deno test --allow-read js/embedded_test.ts",
     "wasm:embedded:browser:bundle": "deno bundle --platform=browser js/embedded_browser_smoke.ts -o target/embedded-browser-smoke.js",

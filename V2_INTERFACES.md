@@ -24,12 +24,16 @@ PackageInput
       target_id: canonical ID of another supplied module
 ```
 
-The root ID names exactly one supplied module. Canonical IDs and `SourceId`s are
-package-local identities; source-declared `module` names remain language
-namespaces and are validated separately. For every authored import path the host
-supplies exactly one resolution edge, supplies no undeclared edge, and supplies
-the target module in the same package. The compiler then associates the authored
-alias with that target.
+The root ID names exactly one supplied module. Canonical IDs are package-local
+identities; source-declared `module` names remain language namespaces and are
+validated separately. Package compilation deterministically reassigns compiled
+`SourceId`s: the root is `0`, then all remaining modules follow canonical-ID
+order. Diagnostics, warnings, provenance, and full/mapped artifacts use those
+compiled IDs. Hosts should use the same small ordering rule to map them back to
+source names. Standalone parsing of a `SourceFile` still preserves its supplied
+ID. For every authored import path the host supplies exactly one resolution
+edge, supplies no undeclared edge, and supplies the target module in the same
+package. The compiler then associates the authored alias with that target.
 
 Hosts may canonicalize paths, enforce sandboxes, fetch modules, or read files
 before constructing this value. None of that behavior enters core semantics.
@@ -196,7 +200,7 @@ TypeScript API accepts it as `bigint`.
 Operation 3 remains byte-for-byte compatible with the first ABI-1 vertical slice;
 operation 4 is the additive typed extension used by message-free requests.
 Operation 5 compiles message-bearing packages without changing operation 2.
-Operations 14 and 15 add experimental `bytecode/0` loading without changing the
+Operations 14 and 15 add `bytecode/1` loading without changing the
 grammar handle or generation operations. The TypeScript owner exposes them as
 `loadArtifact` and `inspectArtifact`; all input buffers are copied through the
 existing allocation boundary and released before return.

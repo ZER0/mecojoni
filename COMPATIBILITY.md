@@ -16,6 +16,7 @@ These identifiers are compatibility contracts, not marketing labels.
 | Production IDs | `production-fnv1a64/1` | Authored IDs remain verbatim; derived IDs may change only under a new hash contract and explicit state migration. |
 | WASM ABI/wire | ABI `1`, wire `1` | New exports and operation numbers are additive. Existing signatures, handle ownership, payload fields, and operation meanings cannot change. Unknown trailing input remains an error. |
 | Snapshots | `snapshot/1`, `MECS` / `MECR` | Existing bytes decode identically. New incompatible state requires a new version and fails closed in old readers. |
+| Compiled artifacts | `bytecode/1`, `MECB` 1.0, `meco-bc1-0000001` | Existing canonical bytes decode identically under the exact fingerprint. Changed tags, records, hashes, limits, or lowered semantics require `bytecode/2`. |
 | CLI | `cli/1` | Commands may gain optional flags; stream placement, JSON field meaning, flag parsing, and exit statuses remain compatible. |
 | Benchmarks | `workloads/1` | Exact operation fixtures change only with a reviewed compatibility decision. |
 

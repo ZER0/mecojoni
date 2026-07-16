@@ -1,0 +1,36 @@
+{
+  "schema": "mecojoni-bytecode1-workloads/1",
+  "recordedAt": "2026-07-16",
+  "host": { "os": "Darwin 25.3.0", "architecture": "arm64", "cpu": "Apple M1 Max" },
+  "toolchain": { "rust": "1.85.0", "deno": "2.8.3", "v8": "14.9.207.2-rusty" },
+  "samples": 5,
+  "notes": [
+    "Native and WASM generation operation counts are exact across source and bytecode.",
+    "Every WASM sample starts from a fresh instance and disposes to zero live handles and ABI allocations.",
+    "Wall times are evidence from one machine, not portable performance promises."
+  ],
+  "workloads": [
+    { "scenario": "flat-64", "class": "realistic", "sourceBytes": 1166, "artifactBytes": 10325, "native": { "sourceCompileNs": 77500, "artifactLoadNs": 23083, "artifactEncodeNs": 30250, "sourceCompileAllocatedBytes": 168796, "artifactLoadAllocatedBytes": 24134 }, "wasm": { "sourceCompileMs": 0.415834, "artifactLoadMs": 0.115625, "sourceGenerationMs": 5.56475, "artifactGenerationMs": 5.108833, "sourceMemoryAfterLoad": 1245184, "artifactMemoryAfterLoad": 1179648 }, "operations": { "expansions": 1000, "samplerWords": 1000, "outputBytes": 13835 } },
+    { "scenario": "tree-dialogue", "class": "realistic", "sourceBytes": 414, "artifactBytes": 3519, "native": { "sourceCompileNs": 35459, "artifactLoadNs": 8167, "artifactEncodeNs": 6833, "sourceCompileAllocatedBytes": 49736, "artifactLoadAllocatedBytes": 7845 }, "wasm": { "sourceCompileMs": 0.188292, "artifactLoadMs": 0.06575, "sourceGenerationMs": 5.791333, "artifactGenerationMs": 5.237958, "sourceMemoryAfterLoad": 1179648, "artifactMemoryAfterLoad": 1179648 }, "operations": { "expansions": 5000, "samplerWords": 5000, "outputBytes": 53324 } },
+    { "scenario": "chain-512", "class": "adversarial", "sourceBytes": 8073, "artifactBytes": 115469, "native": { "sourceCompileNs": 3339709, "artifactLoadNs": 489167, "artifactEncodeNs": 395042, "sourceCompileAllocatedBytes": 2837280, "artifactLoadAllocatedBytes": 269782 }, "wasm": { "sourceCompileMs": 5.601125, "artifactLoadMs": 1.400292, "sourceGenerationMs": 5.797375, "artifactGenerationMs": 4.874334, "sourceMemoryAfterLoad": 2621440, "artifactMemoryAfterLoad": 1638400 }, "operations": { "expansions": 51300, "samplerWords": 51300, "outputBytes": 800 } },
+    { "scenario": "dense-dag-96x8", "class": "adversarial", "sourceBytes": 5855, "artifactBytes": 116639, "native": { "sourceCompileNs": 1723125, "artifactLoadNs": 268958, "artifactEncodeNs": 203833, "sourceCompileAllocatedBytes": 1913144, "artifactLoadAllocatedBytes": 280780 }, "wasm": { "sourceCompileMs": 3.406542, "artifactLoadMs": 0.501542, "sourceGenerationMs": 0.706167, "artifactGenerationMs": 0.629875, "sourceMemoryAfterLoad": 2293760, "artifactMemoryAfterLoad": 1638400 }, "operations": { "expansions": 2390, "samplerWords": 2390, "outputBytes": 800 } },
+    { "scenario": "recursive-balanced", "class": "realistic", "sourceBytes": 139, "artifactBytes": 816, "native": { "sourceCompileNs": 9583, "artifactLoadNs": 2125, "artifactEncodeNs": 9583, "sourceCompileAllocatedBytes": 10582, "artifactLoadAllocatedBytes": 1578 }, "wasm": { "sourceCompileMs": 0.111708, "artifactLoadMs": 0.0305, "sourceGenerationMs": 4.312542, "artifactGenerationMs": 3.795959, "sourceMemoryAfterLoad": 1179648, "artifactMemoryAfterLoad": 1179648 }, "operations": { "expansions": 1431, "samplerWords": 1431, "outputBytes": 2574 } },
+    { "scenario": "fanout-10000", "class": "adversarial", "sourceBytes": 188983, "artifactBytes": 1599123, "native": { "sourceCompileNs": 235261500, "artifactLoadNs": 3422750, "artifactEncodeNs": 2689167, "sourceCompileAllocatedBytes": 30430534, "artifactLoadAllocatedBytes": 3759108 }, "wasm": { "sourceCompileMs": 778.818958, "artifactLoadMs": 5.402459, "sourceGenerationMs": 1.664584, "artifactGenerationMs": 0.415625, "sourceMemoryAfterLoad": 19857408, "artifactMemoryAfterLoad": 7602176 }, "operations": { "expansions": 100, "samplerWords": 100, "outputBytes": 1583 } },
+    { "scenario": "harbor-dialogue", "class": "representative", "sourceBytes": 1258, "manifestBytes": 28, "artifactBytes": 7407, "native": { "sourceCompileNs": 71041, "artifactLoadNs": 19167, "artifactEncodeNs": 26000, "sourceCompileAllocatedBytes": 122815, "artifactLoadAllocatedBytes": 17254 }, "wasm": { "sourceCompileMs": 0.213541, "artifactLoadMs": 0.054167, "sourceFirstGenerationMs": 0.029875, "artifactFirstGenerationMs": 0.02475, "sourceMemoryAfterLoad": 1245184, "artifactMemoryAfterLoad": 1179648 }, "operations": { "expansions": 4, "samplerWords": 4, "outputBytes": 40 } }
+  ],
+  "delivery": {
+    "genericWasmBytes": 601796,
+    "embeddedBytecodeWasmBytes": 609031,
+    "genericWasmGzipBytes": 191073,
+    "embeddedBytecodeWasmGzipBytes": 193143,
+    "genericWasmBrotliBytes": 151992,
+    "embeddedBytecodeWasmBrotliBytes": 153657,
+    "sourceAndManifestGzipBytes": 877,
+    "sourceAndManifestBrotliBytes": 710,
+    "gzipIncreaseAgainstGenericPlusSourcePercent": 0.62,
+    "brotliIncreaseAgainstGenericPlusSourcePercent": 0.63,
+    "browserContentWasmRequests": 1,
+    "browserMecoOrMecobRequests": 0
+  },
+  "decision": "freeze-bytecode/1"
+}

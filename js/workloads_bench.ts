@@ -68,6 +68,64 @@ for (const workload of workloads()) {
     liveAllocations: 0,
     liveAllocationBytes: 0,
   }));
+
+  const artifact = await Deno.readFile(
+    new URL(`../benchmarks/artifacts/workloads/${workload.name}.mecob`, import.meta.url),
+  );
+  const loadMs: number[] = [];
+  const artifactGenerationMs: number[] = [];
+  let artifactEvidence: Record<string, number> | undefined;
+  for (let sample = 0; sample < samples; sample++) {
+    const meco = await Mecojoni.instantiate(wasm);
+    const memoryBefore = meco.linearMemoryBytes;
+    const loadStarted = performance.now();
+    const loaded = meco.loadArtifact(artifact);
+    if (!loaded.ok) throw new Error(`${workload.name} artifact: ${loaded.error.message}`);
+    loadMs.push(performance.now() - loadStarted);
+    const memoryAfterLoad = meco.linearMemoryBytes;
+    const generationStarted = performance.now();
+    let expansions = 0;
+    let samplerWords = 0;
+    let outputBytes = 0;
+    for (let seed = 0; seed < workload.generations; seed++) {
+      const result = meco.generateWeighted(loaded.value, {
+        seed: BigInt(seed),
+        limits: workloadLimits,
+      });
+      if (!result.ok) throw new Error(`${workload.name} artifact: ${result.error.message}`);
+      expansions += result.value.expansions;
+      samplerWords += result.value.samplerWords;
+      outputBytes += encoder.encode(result.value.text).byteLength;
+    }
+    artifactGenerationMs.push(performance.now() - generationStarted);
+    loaded.value.dispose();
+    if (meco.liveHandleCount !== 0 || meco.liveAllocationCount !== 0) {
+      throw new Error(`${workload.name} artifact: WASM benchmark leaked host resources`);
+    }
+    artifactEvidence ??= {
+      expansions,
+      samplerWords,
+      outputBytes,
+      memoryBefore,
+      memoryAfterLoad,
+      memoryAfterDispose: meco.linearMemoryBytes,
+    };
+  }
+  console.log(JSON.stringify({
+    engine: "v2-wasm-bytecode",
+    version: workloadVersion,
+    scenario: workload.name,
+    class: workload.class,
+    samples,
+    artifactBytes: artifact.byteLength,
+    generations: workload.generations,
+    loadMsMedian: median(loadMs),
+    generationMsMedian: median(artifactGenerationMs),
+    ...artifactEvidence,
+    liveHandles: 0,
+    liveAllocations: 0,
+    liveAllocationBytes: 0,
+  }));
 }
 
 const harborDirectory = new URL("../benchmarks/packages/harbor/", import.meta.url);

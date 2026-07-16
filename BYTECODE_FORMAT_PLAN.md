@@ -1,14 +1,12 @@
 # Mecojoni bytecode format plan
 
-> **Status:** implementation in progress. Milestone B0 is complete; `bytecode/0`
-> remains experimental and is not a compatibility promise.
+> **Status:** implemented. Milestones B0–B6 are complete and the measured format
+> is frozen as `bytecode/1`. The exact normative layout is
+> [`BYTECODE_FORMAT.md`](BYTECODE_FORMAT.md).
 >
-> This plan does not reverse
-> [ADR 0001](docs/decisions/0001-defer-compiled-artifacts.md). Source packages
-> remain the v2 distribution format until a real package demonstrates a startup,
-> memory, or deployment requirement that justifies bytecode. The first prototype
-> must use `bytecode/0`; only the completed conformance and measurement gates below
-> may freeze `bytecode/1`.
+> Source remains the authoring and archival format. ADR 0001 was reopened by
+> measured single-WASM requirements; `bytecode/1` is an additional compiled
+> deployment format, not a replacement for source.
 
 ## Objective
 
@@ -108,11 +106,10 @@ package hash. Replay receipts therefore remain valid regardless of how the
 grammar was loaded. A bytecode re-encoding may have a different bytecode hash
 only after an explicitly versioned container change.
 
-The `full` profile can recompute the existing semantic hash from its retained
-sources, resolution edges, and manifest. The `mapped` and `stripped` profiles
-cannot independently reconstruct a source-text hash; for them the field is a
-compiler-produced semantic identity protected against accidental corruption by
-the bytecode content hash and against tampering only by host-owned distribution
+No `bytecode/1` profile retains source text or resolution edges, so none can
+independently recompute the source-derived semantic hash. Every profile carries
+the compiler-produced semantic identity, protected against accidental corruption
+by the bytecode content hash and against tampering only by host-owned distribution
 authentication.
 
 The initial dependency-free hash can follow the repository's versioned FNV-1a64
@@ -205,8 +202,8 @@ catalogs, locale resources, and formatter state are not.
 Canonical output is necessary for caching, reproducible builds, tests, and
 meaningful bytecode hashes.
 
-- Normalize the package into canonical module order before assigning serialized
-  indexes, or remap compiler indexes during encoding.
+- Assign source ID `0` to the root module, then order all remaining modules by
+  canonical ID and assign consecutive source IDs before lowering or encoding.
 - Sort the string table by UTF-8 bytes and remove duplicates.
 - Use a fixed section order, fixed record widths, and zero-filled reserved fields.
 - Store exact reduced rational `(i64 numerator, u64 denominator)` pairs.
@@ -333,8 +330,9 @@ embedded. Implement it in two non-recursive passes.
   targets.
 - Recheck rule productivity, reachability facts, nullability, recursion flags, or
   a cheaper proof certificate; never trust flags without validation.
-- Recompute the bytecode hash. Recompute the semantic package hash for `full`,
-  and validate its presence and contract version for `mapped`/`stripped`.
+- Recompute the bytecode hash and validate the compiler-produced semantic package
+  hash field for every profile. Bytecode/1 cannot reconstruct that source-derived
+  identity because source text and resolution edges are deliberately absent.
 - Construct `CompiledGrammar` only after the complete artifact succeeds; return no
   partial grammar on failure.
 
@@ -362,14 +360,16 @@ Support three explicit profiles without changing runtime semantics:
 
 | Profile | Retained information | Intended use |
 | --- | --- | --- |
-| `full` | Original normalized sources, source names, byte/scalar spans, and warnings | Development, audits, and complete diagnostics. |
-| `mapped` | Source names, compact span mapping, stable IDs, and warnings | Production with actionable diagnostics. |
-| `stripped` | Stable rule/production/message IDs and minimum provenance only | Size-sensitive deployments that accept limited source diagnostics. |
+| `full` | Lowered byte/scalar spans, stable IDs, and warnings; declares full compiled-debug tooling capability | Development and audits when source files remain available separately. |
+| `mapped` | The same runtime provenance payload, but declares only mapped tooling capability | Production that intentionally disables full-debug-only APIs. |
+| `stripped` | The same minimum runtime provenance required for semantic equivalence, but declares stripped tooling capability | Production that intentionally disables full-debug-only APIs. |
 
 The profile is header-visible and included in the bytecode content hash, not the
-semantic package hash. Generation output and replay identity must match across all
-three profiles. APIs that require unavailable source detail return a stable
-capability diagnostic rather than fabricated spans.
+semantic package hash. In `bytecode/1` all three canonical payloads retain the
+same runtime spans so provenance remains exactly equivalent; source text and
+source names are absent from every profile. The profile is therefore a tooling
+capability declaration, not a compression switch. APIs that require the `full`
+declaration return a stable capability diagnostic for `mapped` and `stripped`.
 
 ## Rust API plan
 
@@ -560,18 +560,18 @@ latency promise is inferred from one machine.
 | B3 — Complete semantics | Complete |
 | B4 — CLI and external WASM | Complete |
 | B5 — Single-WASM build | Complete |
-| B6 — Freeze or stop | Pending |
+| B6 — Freeze or stop | Complete — frozen as `bytecode/1` |
 
-### `bytecode/0` implementation note
+### Final format decision
 
-The experimental implementation deliberately starts with one required
+The implementation uses one required
 lowered-grammar section containing canonical tagged records. The fixed header,
 directory, little-endian integers, exact runtime fingerprint, semantic/content
 hash separation, owned decoding, and public limits are implemented. The
-provisional multi-table and fixed-width instruction layout above remains a
-candidate for `bytecode/1`, not an accidental promise: measurements in B4–B6
-will determine whether splitting the canonical payload pays for its additional
-format surface.
+provisional multi-table and fixed-width instruction layout above was not adopted:
+the smaller tagged-record format passed every semantic/security gate and avoided
+freezing unused tables or opcodes. `BYTECODE_FORMAT.md` supersedes provisional
+layout details in this plan.
 
 ### Milestone B0 — Reopen the decision with evidence
 
@@ -660,19 +660,19 @@ This is not required for `bytecode/1`. Decoding to the existing owned
 `CompiledGrammar` captures most parse/compile startup savings with much lower
 implementation and unsafe-code risk.
 
-## Decisions required before implementation
+## Resolved decisions
 
-1. What real package and startup/deployment budget reopens ADR 0001?
-2. Is independent artifact distribution required, or is exact build coupling
-   acceptable?
-3. Which debug profile must production support?
-4. Is a non-cryptographic content hash sufficient when authenticity remains
-   host-owned, or does the product require a reviewed cryptographic dependency?
-5. Must formatter catalogs be embedded separately, or is only grammar content in
-   scope?
-6. What hard artifact and decoded-memory limits fit the smallest supported host?
-7. Is canonical artifact identity required across compiler patch releases before
-   `bytecode/1`, or only after it freezes?
-
-Until those questions have measured answers, this document is an implementation
-plan, not a promise that bytecode will replace source packages.
+1. Harbor is the representative package; the gate was ≥25% startup improvement,
+   ≤20% compressed delivery increase, exact semantics, and zero WASM leaks.
+2. The primary consumer is an exact-fingerprint content-specific WASM. External
+   `.mecob` distribution is supported under the same fingerprint.
+3. Production supports all three profile flags; the content build currently uses
+   `full` and every profile preserves runtime provenance semantics.
+4. FNV-1a64 is sufficient for deterministic identity and accidental corruption;
+   authenticity remains host-owned.
+5. Grammar content and message schemas are embedded; formatter catalogs remain
+   separate host resources.
+6. Hard artifact/decoded ceilings are 64/128 MiB with the independent table
+   limits frozen in `BYTECODE_FORMAT.md`.
+7. Canonical bytes are frozen under `bytecode/1` and its exact runtime
+   fingerprint. Incompatible compiler/runtime changes require `bytecode/2`.

@@ -20,6 +20,10 @@ pub struct PackageSource {
 }
 
 /// Complete, I/O-free input to package compilation.
+///
+/// Package compilation deterministically reassigns source IDs: the root is
+/// zero and remaining modules follow canonical-ID order. Standalone parsing of
+/// each [`SourceFile`] continues to preserve its caller-supplied source ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageInput {
     pub root_id: String,

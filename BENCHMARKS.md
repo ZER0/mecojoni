@@ -60,6 +60,29 @@ embedded-source size proxy rather than a second executable source-embedding
 pipeline. Chrome observed exactly one content-WASM request and no `.meco` or
 `.mecob` request.
 
+## Bytecode/1 freeze evidence
+
+The complete six-workload plus Harbor decision record is
+[`benchmarks/results/2026-07-16-bytecode1-workloads-darwin-arm64.json`](benchmarks/results/2026-07-16-bytecode1-workloads-darwin-arm64.json).
+Owned decode reduced load work and retained allocation on every shape. The
+representative Harbor WASM load fell from 0.214 ms source compilation to 0.054
+ms; the adversarial 10,000-way fanout fell from 779 ms to 5.40 ms. Exact output,
+expansion, sampler-word, trace, replay, and leak gates remained unchanged.
+
+The Harbor content build also meets the delivery budget: under 1% compressed
+increase against generic WASM plus compressed source, one content request, and
+no runtime grammar fetch. Together with bounded mutation/truncation tests and
+native, thumb, Deno, and Chrome equivalence, this justifies freezing the measured
+single-section tagged format as `bytecode/1`. The larger uncompressed `.mecob`
+files remain a tradeoff; source stays the authoring/archive format and hosts
+should choose bytecode only for measured startup or single-asset deployment.
+
+The final `bytecode/1` release build is 601,796 bytes generic and 609,031 bytes
+with Harbor embedded. At gzip-9 those are 191,073 and 193,143 bytes; at
+Brotli-11 they are 151,992 and 153,657 bytes. Against generic WASM plus the
+separately compressed source/manifest baseline, the content build adds 0.62%
+gzip or 0.63% Brotli.
+
 It reports compile/generation time, linear-memory pages before/after compile and
 dispose, operation counts, live handles, and host-visible ABI allocations. The
 normative Deno test requires zero leaked handles/allocations and at most one page
@@ -106,8 +129,10 @@ the temporary ordered collision map. It is retained because it removes repeated
 runtime work and improves compile asymptotics. Seed mapping is proven identical
 between cached trace-off selection and the full traced path for a 1,024-way rule.
 
-No other optimization was retained: the remaining workloads did not justify an
-alias table, bytecode, serialized IR, or a more complex history representation.
+At that source-runtime milestone no other optimization was retained: the
+remaining workloads did not justify an alias table, serialized IR, or a more
+complex history representation. The later single-WASM requirement and Harbor
+startup evidence reopened serialized IR under the bytecode budget below.
 
 ## Bytecode deployment budget
 
@@ -116,8 +141,8 @@ content-bearing `.wasm`, no runtime `.meco` fetches, and no browser-side import
 resolution. Portable separately distributed `.mecob` files remain useful for
 tooling but are not the primary deployment requirement.
 
-The experimental format may freeze as `bytecode/1` only when the Harbor package
-meets all of these gates on the same host/toolchain:
+The experimental format was allowed to freeze as `bytecode/1` only after the
+Harbor package met all of these gates on the same host/toolchain:
 
 - bytecode load plus first output is at least 25% faster, or at least 1 ms faster,
   than source compile plus first output;

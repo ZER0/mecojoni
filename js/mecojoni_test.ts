@@ -194,7 +194,7 @@ Deno.test("Deno receives structured compiler diagnostics with bigint spans", asy
 
   assert(!compiled.ok, "undefined rule unexpectedly compiled");
   assertEquals(compiled.diagnostics[0].code, "E_UNDEFINED_RULE");
-  assertEquals(compiled.diagnostics[0].span?.sourceId, 7);
+  assertEquals(compiled.diagnostics[0].span?.sourceId, 0);
   assert(typeof compiled.diagnostics[0].span?.start.byte === "bigint", "span is not bigint-safe");
   assertEquals(meco.liveHandleCount, 0, "error path leaked handles");
 });
@@ -603,7 +603,7 @@ Deno.test("filesystem bytecode loads, inspects, matches source, and releases han
   const bytes = await Deno.readFile(new URL("fixtures/hello.mecob", import.meta.url));
   const metadata = meco.inspectArtifact(bytes);
   assert(metadata.ok, metadata.ok ? "" : metadata.error.message);
-  assertEquals(metadata.value.version, "bytecode/0");
+  assertEquals(metadata.value.version, "bytecode/1");
   assertEquals(metadata.value.debugProfile, "full");
   assertEquals(metadata.value.ruleCount, 2);
   assertEquals(metadata.value.productionCount, 5);
@@ -641,6 +641,27 @@ Deno.test("filesystem bytecode loads, inspects, matches source, and releases han
   assert(!rejected.ok, "corrupt artifact loaded");
   assertEquals(rejected.diagnostics[0].code, "E_BYTECODE_MAGIC");
   assertEquals(meco.liveHandleCount, 0);
+});
+
+Deno.test("WASM rejects every bytecode truncation and one-byte mutation without leaks", async () => {
+  const meco = await instantiate();
+  const bytes = await Deno.readFile(new URL("fixtures/hello.mecob", import.meta.url));
+
+  for (let length = 0; length < bytes.length; length++) {
+    const rejected = meco.loadArtifact(bytes.subarray(0, length));
+    assert(!rejected.ok, `truncated artifact of ${length} bytes loaded`);
+  }
+
+  const mutation = bytes.slice();
+  for (let index = 0; index < mutation.length; index++) {
+    mutation[index] ^= 0x5a;
+    const rejected = meco.loadArtifact(mutation);
+    assert(!rejected.ok, `artifact mutation at byte ${index} loaded`);
+    mutation[index] ^= 0x5a;
+  }
+
+  assertEquals(meco.liveHandleCount, 0, "artifact rejection leaked handles");
+  assertEquals(meco.liveAllocationCount, 0, "artifact rejection leaked ABI allocations");
 });
 
 Deno.test("generic WASM reports the absent embedded grammar as a capability", async () => {

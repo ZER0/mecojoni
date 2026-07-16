@@ -287,7 +287,7 @@ fn artifact_commands_round_trip_real_filesystem_packages_atomically() {
     for command in ["inspect-artifact", "verify-artifact"] {
         let output = meco(&[command, artifact.to_str().unwrap(), "--output=jsonl"]);
         assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
-        assert!(text(&output.stdout).contains("bytecode/0") || command == "verify-artifact");
+        assert!(text(&output.stdout).contains("bytecode/1") || command == "verify-artifact");
     }
     let generated = meco(&[
         "generate-artifact",

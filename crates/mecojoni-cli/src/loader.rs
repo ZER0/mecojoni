@@ -30,7 +30,6 @@ pub(crate) fn load_package(root: &Path) -> CliResult<LoadedPackage> {
     let mut pending = vec![root.clone()];
     let mut seen = BTreeSet::new();
     let mut raw_modules = Vec::new();
-    let mut paths = BTreeMap::new();
 
     while let Some(path) = pending.pop() {
         if !seen.insert(path.clone()) {
@@ -54,7 +53,6 @@ pub(crate) fn load_package(root: &Path) -> CliResult<LoadedPackage> {
             imports.push((authored, target.clone()));
             pending.push(target);
         }
-        paths.insert(id, path.clone());
         raw_modules.push(RawModule {
             path,
             module_id,
@@ -71,9 +69,19 @@ pub(crate) fn load_package(root: &Path) -> CliResult<LoadedPackage> {
         .get(&root)
         .cloned()
         .ok_or_else(|| CliError::internal("loaded package lost its root module"))?;
+    raw_modules.sort_by(|left, right| {
+        let left_key = (left.path != root, left.module_id.as_str());
+        let right_key = (right.path != root, right.module_id.as_str());
+        left_key.cmp(&right_key)
+    });
+    let mut paths = BTreeMap::new();
     let modules = raw_modules
         .into_iter()
-        .map(|module| {
+        .enumerate()
+        .map(|(index, module)| {
+            let id = u32::try_from(index)
+                .map_err(|_| CliError::internal("package contains more than u32::MAX modules"))?;
+            paths.insert(id, module.path.clone());
             let resolved_imports = module
                 .imports
                 .into_iter()
@@ -89,7 +97,11 @@ pub(crate) fn load_package(root: &Path) -> CliResult<LoadedPackage> {
                 .collect::<CliResult<Vec<_>>>()?;
             Ok(PackageSource {
                 canonical_id: module.module_id,
-                source: module.source,
+                source: SourceFile::new(
+                    SourceId::new(id),
+                    module.source.name(),
+                    module.source.text(),
+                ),
                 resolved_imports,
             })
         })

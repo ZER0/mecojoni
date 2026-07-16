@@ -1,4 +1,4 @@
-//! Canonical experimental compiled artifacts.
+//! Canonical frozen compiled artifacts.
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
@@ -13,22 +13,26 @@ use crate::{
     Value,
 };
 
-/// Experimental compiled-artifact compatibility identifier.
-pub const BYTECODE_VERSION: &str = "bytecode/0";
+/// Frozen compiled-artifact compatibility identifier.
+pub const BYTECODE_VERSION: &str = "bytecode/1";
 /// Versioned invariants shared by source compilation and artifact decoding.
 pub const LOWERED_IR_CONTRACT: &str = "lowered-ir/1";
 
 const MAGIC: &[u8; 4] = b"MECB";
-const MAJOR: u16 = 0;
-const MINOR: u16 = 1;
+const MAJOR: u16 = 1;
+const MINOR: u16 = 0;
 const HEADER_BYTES: u32 = 72;
 const DIRECTORY_BYTES: u64 = 32;
 const PAYLOAD_OFFSET: u64 = HEADER_BYTES as u64 + DIRECTORY_BYTES;
 const CONTENT_HASH_OFFSET: usize = 48;
-const RUNTIME_FINGERPRINT: &[u8; 16] = b"meco-bc0-0000001";
+const RUNTIME_FINGERPRINT: &[u8; 16] = b"meco-bc1-0000001";
 const SECTION_LOWERED_GRAMMAR: u16 = 1;
 
-/// Source/debug information retained in a compiled artifact.
+/// Declared tooling capability for a compiled artifact.
+///
+/// Bytecode/1 retains identical lowered runtime spans under every profile and
+/// never embeds source text or names. The profile controls capability checks,
+/// not payload compression.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ArtifactDebugProfile {
     #[default]
@@ -147,7 +151,7 @@ impl ArtifactMetadata {
     }
 }
 
-/// Encodes a canonical owned `bytecode/0` artifact.
+/// Encodes a canonical owned `bytecode/1` artifact.
 ///
 /// # Errors
 ///
@@ -297,7 +301,7 @@ fn validate_container(bytes: &[u8]) -> MecoResult<Header> {
     if u16_at(4) != MAJOR || u16_at(6) != MINOR {
         return Err(error(
             DiagnosticCode::BYTECODE_VERSION,
-            "artifact bytecode/0 revision is unsupported",
+            "artifact bytecode/1 revision is unsupported",
         ));
     }
     if u32_at(8) != HEADER_BYTES

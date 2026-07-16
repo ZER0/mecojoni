@@ -10,6 +10,8 @@ artifact milestones B0–B6, including their exit gates, are defined in
 [`BYTECODE_FORMAT_PLAN.md`](BYTECODE_FORMAT_PLAN.md). B0 is complete: the
 repository records archived v1 JS, v2 native Rust, and v2 WASM/Deno evidence plus
 a manually authored multi-module package and a single-WASM deployment budget.
+B1–B6 are now also complete, and the evidence-backed result is the frozen
+[`bytecode/1` format](BYTECODE_FORMAT.md).
 
 ## Fixed implementation constraints
 
@@ -276,7 +278,9 @@ Optimize only measured workloads and prepare a stable release.
 allocations plus WASM linear memory, handles, and host-visible allocations. The
 measured fan-out bottleneck justified a cumulative selection index and
 `O(n log n)` production-ID validation; both preserve the frozen seed mapping.
-Compiled-artifact serialization is deferred by
+The later B0–B6 evidence reopened and superseded the original deferral:
+compiled-artifact serialization is implemented and frozen as
+[`bytecode/1`](BYTECODE_FORMAT.md). The decision history remains in
 [`docs/decisions/0001-defer-compiled-artifacts.md`](docs/decisions/0001-defer-compiled-artifacts.md).
 See [`BENCHMARKS.md`](BENCHMARKS.md), [`COMPATIBILITY.md`](COMPATIBILITY.md),
 [`CONFORMANCE.md`](CONFORMANCE.md), and [`RELEASE.md`](RELEASE.md) for the

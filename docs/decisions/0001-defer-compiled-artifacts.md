@@ -1,7 +1,7 @@
 # ADR 0001: keep source packages as the v2 distribution format
 
-- Status: reopened for experimental `bytecode/0`; compatibility decision remains
-  accepted until milestone B6
+- Status: superseded by the measured `bytecode/1` decision at milestone B6;
+  source remains authoritative while compiled deployment is now supported
 - Date: 2026-07-16
 
 See [`../../BYTECODE_FORMAT_PLAN.md`](../../BYTECODE_FORMAT_PLAN.md) and

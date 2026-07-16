@@ -1708,7 +1708,7 @@ mod tests {
         let mut metadata = Decoder::new(&state.result(inspected).expect("inspect result").payload);
         assert_eq!(metadata.u32(), Ok(WIRE_VERSION));
         assert_eq!(metadata.u32(), Ok(PAYLOAD_ARTIFACT));
-        assert_eq!(metadata.string(64), Ok("bytecode/0".to_string()));
+        assert_eq!(metadata.string(64), Ok("bytecode/1".to_string()));
 
         let loaded = dispatch(&mut state, OP_ARTIFACT_LOAD, &artifact);
         let handle = state.claim_result_value(loaded).expect("grammar handle");

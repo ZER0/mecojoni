@@ -102,6 +102,17 @@ struct Measurement {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--write-artifacts") {
+        let directory = std::env::args()
+            .nth(2)
+            .expect("--write-artifacts requires a directory");
+        write_workload_artifacts(std::path::Path::new(&directory));
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--artifact") {
+        measure_artifacts();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--artifact-startup") {
         measure_artifact_startup();
         return;
@@ -167,6 +178,73 @@ fn main() {
             first.output_bytes,
         );
     }
+}
+
+fn write_workload_artifacts(directory: &std::path::Path) {
+    std::fs::create_dir_all(directory).expect("create artifact directory");
+    for workload in workloads() {
+        let grammar = compile_package(&workload.package()).expect("workload compiles");
+        let bytes =
+            encode_artifact(&grammar, ArtifactOptions::default()).expect("workload encodes");
+        let path = directory.join(format!("{}.mecob", workload.name));
+        std::fs::write(&path, bytes).expect("write workload artifact");
+        println!("{}", path.display());
+    }
+}
+
+fn measure_artifacts() {
+    let samples = 5;
+    println!(
+        "version,scenario,class,samples,source_bytes,artifact_bytes,encode_ns,rules,productions,load_ns_median,load_alloc_calls_median,load_alloc_bytes_median,load_live_bytes_median,generations,generation_ns_median,generation_alloc_calls_median,generation_alloc_bytes_median,generation_live_bytes_median,expansions,sampler_words,output_bytes"
+    );
+    for workload in workloads() {
+        let source = compile_package(&workload.package()).expect("workload compiles");
+        let encode_started = Instant::now();
+        let bytes = encode_artifact(&source, ArtifactOptions::default()).expect("workload encodes");
+        let encode_ns = encode_started.elapsed().as_nanos();
+        let measurements = (0..samples)
+            .map(|_| measure_decoded(&workload, &bytes))
+            .collect::<Vec<_>>();
+        let first = measurements[0];
+        println!(
+            "{WORKLOAD_VERSION},{},{},{samples},{},{},{encode_ns},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            workload.name,
+            workload.class,
+            workload.source.len(),
+            bytes.len(),
+            first.rules,
+            first.productions,
+            median(&measurements, |sample| sample.compile_ns),
+            median(&measurements, |sample| sample.compile_calls),
+            median(&measurements, |sample| sample.compile_bytes),
+            median(&measurements, |sample| sample.compile_live),
+            workload.generations,
+            median(&measurements, |sample| sample.generation_ns),
+            median(&measurements, |sample| sample.generation_calls),
+            median(&measurements, |sample| sample.generation_bytes),
+            median(&measurements, |sample| sample.generation_live),
+            first.expansions,
+            first.sampler_words,
+            first.output_bytes,
+        );
+    }
+}
+
+fn measure_decoded(workload: &Workload, bytes: &[u8]) -> Measurement {
+    let before_compile = AllocationSnapshot::now();
+    let compile_started = Instant::now();
+    let grammar = decode_artifact(bytes, ArtifactLimits::default()).expect("artifact decodes");
+    let compile_ns = compile_started.elapsed().as_nanos();
+    let after_compile = AllocationSnapshot::now();
+    let (compile_calls, compile_bytes, compile_live) = after_compile.since(before_compile);
+    measure_generation(
+        workload,
+        &grammar,
+        compile_ns,
+        compile_calls,
+        compile_bytes,
+        compile_live,
+    )
 }
 
 fn measure_artifact_startup() {
@@ -335,6 +413,24 @@ fn measure(workload: &Workload) -> Measurement {
     let after_compile = AllocationSnapshot::now();
     let (compile_calls, compile_bytes, compile_live) = after_compile.since(before_compile);
 
+    measure_generation(
+        workload,
+        &grammar,
+        compile_ns,
+        compile_calls,
+        compile_bytes,
+        compile_live,
+    )
+}
+
+fn measure_generation(
+    workload: &Workload,
+    grammar: &mecojoni_core::CompiledGrammar,
+    compile_ns: u128,
+    compile_calls: u64,
+    compile_bytes: u64,
+    compile_live: i128,
+) -> Measurement {
     let before_generation = AllocationSnapshot::now();
     let generation_started = Instant::now();
     let mut expansions = 0_u64;

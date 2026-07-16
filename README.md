@@ -14,9 +14,10 @@ define rules and list items define alternatives—
 while adding the structure needed for game data, conditions, reuse, localization,
 and reliable long-running generation.
 
-> **Status:** the v2 source-language roadmap is feature-complete. An experimental
-> compiled-artifact track is now in progress after representative native/WASM
-> measurements established a single-WASM deployment requirement. The
+> **Status:** the v2 source-language and compiled-artifact roadmaps are
+> feature-complete. Representative native/WASM measurements justified freezing
+> the hostile-input-checked `bytecode/1` format and its single-WASM deployment
+> path. The
 > dependency-free core parses and compiles complete packages, executes exact typed
 > `weighted/1` generation, and resolves complete localized messages through a
 > synchronous host formatter in Rust, Deno, and Chrome. Transactional `diverse/1`, span-aware
@@ -31,9 +32,9 @@ and reliable long-running generation.
 > [`BENCHMARKS.md`](BENCHMARKS.md).
 
 The current Rust API can canonically `encode_artifact`, `decode_artifact`,
-`inspect_artifact`, and `disassemble_artifact`. `bytecode/0` is exact-build
-coupled and hostile-input checked; applications must not treat it as a frozen
-distribution contract yet.
+`inspect_artifact`, and `disassemble_artifact`. The hostile-input-checked format
+is frozen as `bytecode/1`; see [`BYTECODE_FORMAT.md`](BYTECODE_FORMAT.md) for its
+exact layout and [`COMPATIBILITY.md`](COMPATIBILITY.md) for evolution rules.
 
 The authoring CLI can compile, inspect, verify, and generate `.mecob` files.
 Deno and browser hosts can inspect or load the same bytes through
@@ -851,7 +852,8 @@ COMPATIBILITY.md             Frozen language/runtime/ABI compatibility policy
 CONFORMANCE.md               Cross-runtime fixture and release test index
 BENCHMARKS.md                Native/WASM workloads and optimization evidence
 RELEASE.md                   Distribution release checklist
-BYTECODE_FORMAT_PLAN.md      Deferred compiled-artifact and embedding plan
+BYTECODE_FORMAT.md           Normative frozen bytecode/1 layout and policy
+BYTECODE_FORMAT_PLAN.md      Completed compiled-artifact and embedding plan
 Cargo.toml                   Rust 2024 workspace (MSRV 1.85)
 crates/
   mecojoni-benchmarks/       Native operation/allocation workload harness
@@ -902,8 +904,9 @@ precomputed cumulative indexes, and production-ID collision checks are
 `O(n log n)`; both optimizations have committed native/WASM evidence. A production
 Fluent adapter and compound value records are explicitly deferred extensions, not
 unimplemented v2 release promises. See [COMPATIBILITY.md](COMPATIBILITY.md),
-[CONFORMANCE.md](CONFORMANCE.md), [RELEASE.md](RELEASE.md), and the explicitly
-deferred [bytecode plan](BYTECODE_FORMAT_PLAN.md).
+[CONFORMANCE.md](CONFORMANCE.md), [RELEASE.md](RELEASE.md), the frozen
+[bytecode format](BYTECODE_FORMAT.md), and its completed
+[implementation plan](BYTECODE_FORMAT_PLAN.md).
 
 ## Name
 
