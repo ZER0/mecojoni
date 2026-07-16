@@ -9,6 +9,11 @@ ABI-1 operations 14 and 15 load and inspect externally supplied `bytecode/0`
 bytes. Loaded artifacts return the ordinary grammar handle, so all weighted,
 typed, message, diverse, snapshot, disposal, and telemetry APIs remain shared.
 
+The generic build contains no application grammar. The dedicated
+`deno task wasm:embedded:build` command selects one already resolved `.mecob`,
+copies it through `OUT_DIR`, and exposes it through ABI operation 16. Cargo tracks
+both the environment selection and exact artifact path for cache invalidation.
+
 Host-visible allocation count/bytes and live-handle telemetry support leak and
 warm-memory tests. The browser-neutral TypeScript owner in `js/mecojoni.ts`
 copies result payloads before disposal and is tested unchanged in Deno and Chrome.

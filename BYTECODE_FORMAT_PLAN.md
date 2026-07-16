@@ -559,7 +559,7 @@ latency promise is inferred from one machine.
 | B2 — Experimental `bytecode/0` | Complete |
 | B3 — Complete semantics | Complete |
 | B4 — CLI and external WASM | Complete |
-| B5 — Single-WASM build | Pending |
+| B5 — Single-WASM build | Complete |
 | B6 — Freeze or stop | Pending |
 
 ### `bytecode/0` implementation note

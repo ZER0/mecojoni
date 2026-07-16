@@ -40,6 +40,12 @@ Deno and browser hosts can inspect or load the same bytes through
 `Mecojoni.inspectArtifact` and `Mecojoni.loadArtifact`; loaded artifacts use the
 ordinary grammar-handle lifecycle and leak telemetry.
 
+`deno task wasm:embedded:build` produces a content-specific WASM whose private
+data segment contains the fully resolved Harbor artifact. `openEmbeddedGrammar()`
+opens it without a content fetch; the generic WASM returns a capability error.
+The Chrome smoke test asserts that the content build requests neither `.meco`
+nor `.mecob` at runtime.
+
 The syntax in this README is authoritative. `V2_SPECIFICATION.md` must be updated
 with every syntax change; if the documents temporarily disagree, this README wins.
 

@@ -187,6 +187,7 @@ are rejected, and trailing bytes are errors.
 | repetition snapshot import | 13 | bounded `snapshot/1` bytes | restored repetition-store handle plus canonical bytes |
 | artifact load | 14 | bounded canonical `.mecob` bytes | ordinary grammar handle plus compile summary |
 | artifact inspect | 15 | bounded canonical `.mecob` bytes | verified version, profile, hashes, sizes, counts, and entries |
+| embedded grammar open | 16 | empty wire request | ordinary grammar handle from the build-selected private WASM data segment |
 
 Generation limits are depth, expansions, output Unicode scalars, output UTF-8
 bytes, and sampler words in that order. A `u64` is always little-endian and the
@@ -199,6 +200,9 @@ Operations 14 and 15 add experimental `bytecode/0` loading without changing the
 grammar handle or generation operations. The TypeScript owner exposes them as
 `loadArtifact` and `inspectArtifact`; all input buffers are copied through the
 existing allocation boundary and released before return.
+Operation 16 is exposed as `openEmbeddedGrammar`. Generic builds return
+`E_BYTECODE_CAPABILITY`; the explicit content build decodes the private artifact
+and returns the same handle and semantic identity as operation 14.
 Operation 6 produces structure for a synchronous host callback without WASM
 imports, host re-entry, or locale I/O inside the module. Request
 values use a one-byte kind: text `0` plus `str`; number `1` plus signed

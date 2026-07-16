@@ -51,6 +51,15 @@ generation remained effectively unchanged. The full artifact is 7,407 bytes
 versus 1,286 source-plus-manifest bytes before compression, so deployment-size
 and embedded-WASM gates still decide B6.
 
+The release generic WASM is 599,455 bytes and the Harbor-bearing WASM is 606,690
+bytes. At gzip-9 they are 190,023 and 192,086 bytes; at Brotli-11 they are
+151,040 and 153,024 bytes. Comparing the content WASM with the generic WASM plus
+the separately compressed 1,286-byte source/manifest baseline gives a 0.62%
+gzip or 0.84% Brotli increase, within the 20% budget. This is a conservative
+embedded-source size proxy rather than a second executable source-embedding
+pipeline. Chrome observed exactly one content-WASM request and no `.meco` or
+`.mecob` request.
+
 It reports compile/generation time, linear-memory pages before/after compile and
 dispose, operation counts, live handles, and host-visible ABI allocations. The
 normative Deno test requires zero leaked handles/allocations and at most one page

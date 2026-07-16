@@ -643,6 +643,15 @@ Deno.test("filesystem bytecode loads, inspects, matches source, and releases han
   assertEquals(meco.liveHandleCount, 0);
 });
 
+Deno.test("generic WASM reports the absent embedded grammar as a capability", async () => {
+  const meco = await instantiate();
+  const opened = meco.openEmbeddedGrammar();
+  assert(!opened.ok, "generic WASM unexpectedly contained application content");
+  assertEquals(opened.diagnostics[0].code, "E_BYTECODE_CAPABILITY");
+  assertEquals(meco.liveHandleCount, 0);
+  assertEquals(meco.liveAllocationCount, 0);
+});
+
 Deno.test("wrapper source remains browser-neutral", async () => {
   const source = await Deno.readTextFile(new URL("mecojoni.ts", import.meta.url));
   assert(!source.includes("Deno."), "browser wrapper contains a Deno runtime dependency");

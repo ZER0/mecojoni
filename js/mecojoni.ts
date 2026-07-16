@@ -13,6 +13,7 @@ const OP_REPETITION_SNAPSHOT_EXPORT = 12;
 const OP_REPETITION_SNAPSHOT_IMPORT = 13;
 const OP_ARTIFACT_LOAD = 14;
 const OP_ARTIFACT_INSPECT = 15;
+const OP_EMBEDDED_GRAMMAR_OPEN = 16;
 
 const PAYLOAD_ERROR = 0;
 const PAYLOAD_PACKAGE = 1;
@@ -549,6 +550,30 @@ export class Mecojoni {
         diagnostics: [],
       };
     } catch (error) {
+      return caughtFailure(error);
+    }
+  }
+
+  openEmbeddedGrammar(): MecoResult<CompiledGrammar> {
+    let decoded: DecodedResult | undefined;
+    try {
+      decoded = this.invoke(OP_EMBEDDED_GRAMMAR_OPEN, request().finish());
+      if (decoded.status !== 0) return decodeFailure(decoded);
+      expectKind(decoded, PAYLOAD_COMPILE);
+      const entries = Array.from({ length: decoded.reader.u32() }, () => decoded!.reader.string());
+      const defaultEntry = decoded.reader.optionalString();
+      const diagnostics = decoded.reader.diagnostics();
+      decoded.reader.finish();
+      if (decoded.valueHandle === 0) return localFailure("E_ABI_VALUE", "grammar handle is absent");
+      const handle = decoded.valueHandle;
+      decoded.valueHandle = 0;
+      return {
+        ok: true,
+        value: new CompiledGrammar(this, handle, { entries, defaultEntry }),
+        diagnostics,
+      };
+    } catch (error) {
+      if (decoded?.valueHandle) this.disposeHandle(decoded.valueHandle);
       return caughtFailure(error);
     }
   }

@@ -10,6 +10,10 @@ Deno and browsers. They enforce the 64 MiB host boundary before entering WASM; c
 applies independent structural and decoded-memory limits. Returned grammars use the same `dispose()`
 lifecycle as source compilation.
 
+`openEmbeddedGrammar()` opens the private content segment in a content-specific build. The generic
+build returns `E_BYTECODE_CAPABILITY`, making accidental application content in the reusable runtime
+observable.
+
 Generation data uses explicit discriminated `MecoValue` objects. Exact numbers carry `bigint`
 numerator/denominator fields; finite enums carry their member string and are checked against the
 compiled schema. `traceBindings: true` returns ordered silent/emitting binding records;

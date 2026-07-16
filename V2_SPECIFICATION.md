@@ -1401,6 +1401,11 @@ CLI-1 additively provides `compile-artifact`, `inspect-artifact`,
 external artifact loading and inspection; TypeScript uses the same ordinary
 grammar handle and explicit disposal contract as source compilation.
 
+ABI-1 operation 16 opens a build-selected private artifact. The generic WASM has
+an empty slot and returns `E_BYTECODE_CAPABILITY`; the dedicated build copies one
+offline-resolved artifact through `OUT_DIR`. Browser verification requires one
+content-WASM request and forbids runtime `.meco` or `.mecob` requests.
+
 ## Verification strategy
 
 ### Conformance and parser tests

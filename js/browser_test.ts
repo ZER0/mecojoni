@@ -26,6 +26,7 @@ async function existingBrowser(): Promise<string | undefined> {
 }
 
 const browser = await existingBrowser();
+const embeddedBrowserEnabled = Deno.env.get("MECO_EMBEDDED_BROWSER") === "1";
 
 async function waitForDevtools(
   stderr: ReadableStream<Uint8Array>,
@@ -315,6 +316,96 @@ Deno.test({
       browserLogs = devtools.logs;
       const debuggingPort = new URL(devtools.endpoint).port;
       await waitForPageResult(await pageDebuggerUrl(debuggingPort, pageUrl));
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n${browserLogs()}`,
+      );
+    } finally {
+      try {
+        child?.kill("SIGTERM");
+      } catch {
+        // Chrome may already have exited after a startup failure.
+      }
+      await child?.status;
+      await stderrDrain;
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "content-specific browser WASM opens without meco or mecob requests",
+  ignore: browser === undefined || !embeddedBrowserEnabled,
+  fn: async () => {
+    const routes = new Map<string, { path: URL; contentType: string }>([
+      [
+        "/embedded",
+        { path: new URL("js/embedded_browser_smoke.html", workspace), contentType: "text/html" },
+      ],
+      [
+        "/embedded-browser-smoke.js",
+        {
+          path: new URL("target/embedded-browser-smoke.js", workspace),
+          contentType: "text/javascript",
+        },
+      ],
+      [
+        "/mecojoni.wasm",
+        {
+          path: new URL(
+            "target/embedded/wasm32-unknown-unknown/debug/mecojoni_wasm.wasm",
+            workspace,
+          ),
+          contentType: "application/wasm",
+        },
+      ],
+    ]);
+    const requests: string[] = [];
+    let port = 0;
+    const server = Deno.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      onListen(address) {
+        port = address.port;
+      },
+    }, async (request) => {
+      const pathname = new URL(request.url).pathname;
+      requests.push(pathname);
+      const route = routes.get(pathname);
+      if (!route) return new Response("not found", { status: 404 });
+      return new Response(await Deno.readFile(route.path), {
+        headers: { "content-type": route.contentType },
+      });
+    });
+    let child: Deno.ChildProcess | undefined;
+    let stderrDrain: Promise<void> | undefined;
+    let browserLogs = () => "";
+    try {
+      const pageUrl = `http://127.0.0.1:${port}/embedded`;
+      child = new Deno.Command(browser!, {
+        args: [
+          "--headless=new",
+          "--no-sandbox",
+          "--disable-gpu",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--remote-debugging-port=0",
+          pageUrl,
+        ],
+        stdout: "null",
+        stderr: "piped",
+      }).spawn();
+      const devtools = await waitForDevtools(child.stderr);
+      stderrDrain = devtools.drained;
+      browserLogs = devtools.logs;
+      const debuggingPort = new URL(devtools.endpoint).port;
+      await waitForPageResult(await pageDebuggerUrl(debuggingPort, pageUrl));
+      if (requests.some((path) => path.endsWith(".meco") || path.endsWith(".mecob"))) {
+        throw new Error(`embedded build fetched grammar content: ${requests.join(", ")}`);
+      }
+      if (requests.filter((path) => path === "/mecojoni.wasm").length !== 1) {
+        throw new Error(`embedded WASM fetch count changed: ${requests.join(", ")}`);
+      }
     } catch (error) {
       throw new Error(
         `${error instanceof Error ? error.message : String(error)}\n${browserLogs()}`,

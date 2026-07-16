@@ -38,6 +38,21 @@
     "liveHandlesAfterDispose": 0,
     "liveAllocationsAfterDispose": 0
   },
+  "delivery": {
+    "genericWasmBytes": 599455,
+    "embeddedBytecodeWasmBytes": 606690,
+    "genericWasmGzipBytes": 190023,
+    "embeddedBytecodeWasmGzipBytes": 192086,
+    "genericWasmBrotliBytes": 151040,
+    "embeddedBytecodeWasmBrotliBytes": 153024,
+    "sourceAndManifestGzipBytes": 877,
+    "sourceAndManifestBrotliBytes": 710,
+    "gzipIncreaseAgainstGenericPlusSourcePercent": 0.62,
+    "brotliIncreaseAgainstGenericPlusSourcePercent": 0.84,
+    "browserMecoRequests": 0,
+    "browserMecobRequests": 0,
+    "browserContentWasmRequests": 1
+  },
   "semanticOperationEvidence": {
     "expansions": 4,
     "samplerWords": 4,

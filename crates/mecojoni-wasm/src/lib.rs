@@ -45,6 +45,7 @@ pub const OP_REPETITION_SNAPSHOT_EXPORT: u32 = 12;
 pub const OP_REPETITION_SNAPSHOT_IMPORT: u32 = 13;
 pub const OP_ARTIFACT_LOAD: u32 = 14;
 pub const OP_ARTIFACT_INSPECT: u32 = 15;
+pub const OP_EMBEDDED_GRAMMAR_OPEN: u32 = 16;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_ERROR: u32 = 1;
@@ -65,6 +66,7 @@ const MAX_STRING_BYTES: usize = 1_048_576;
 const MAX_SOURCE_BYTES: usize = 16_777_216;
 const MAX_REQUEST_VALUES: usize = 4_096;
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+const EMBEDDED_ARTIFACT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded.mecob"));
 
 /// Returns the ABI version before any allocation or handle operation is attempted.
 #[allow(unsafe_code)]
@@ -273,11 +275,30 @@ fn dispatch(state: &mut State, operation: u32, input: &[u8]) -> u32 {
         OP_REPETITION_SNAPSHOT_IMPORT => repetition_snapshot_import(state, input),
         OP_ARTIFACT_LOAD => artifact_load(state, input),
         OP_ARTIFACT_INSPECT => artifact_inspect(state, input),
+        OP_EMBEDDED_GRAMMAR_OPEN => embedded_grammar_open(state, input),
         _ => state.add_error(AbiDiagnostic::new(
             "E_ABI_OPERATION",
             format!("unknown ABI operation {operation}"),
         )),
     }
+}
+
+#[allow(clippy::const_is_empty)]
+fn embedded_grammar_open(state: &mut State, input: &[u8]) -> u32 {
+    let decoder = match decoder(input) {
+        Ok(decoder) => decoder,
+        Err(diagnostic) => return state.add_error(diagnostic),
+    };
+    if let Err(error) = decoder.finish() {
+        return state.add_error(wire_diagnostic(error));
+    }
+    if EMBEDDED_ARTIFACT.is_empty() {
+        return state.add_error(AbiDiagnostic::new(
+            "E_BYTECODE_CAPABILITY",
+            "this generic WASM build contains no embedded grammar",
+        ));
+    }
+    artifact_load(state, EMBEDDED_ARTIFACT)
 }
 
 fn artifact_load(state: &mut State, input: &[u8]) -> u32 {
