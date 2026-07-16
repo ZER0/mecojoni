@@ -5,6 +5,11 @@ source strings, rejects unpaired UTF-16 before encoding, copies strict UTF-8 thr
 allocations, and exposes ordinary compiler or generation failures as `MecoResult<T>` values. Seeds
 and diagnostic span offsets use `bigint` so JavaScript never rounds a Rust `u64`.
 
+Generation data uses explicit discriminated `MecoValue` objects. Exact numbers carry `bigint`
+numerator/denominator fields; finite enums carry their member string and are checked against the
+compiled schema. `traceBindings: true` returns ordered silent/emitting binding records;
+`traceSelections: true` returns exact rational and normalized weights for replay inspection.
+
 Build and run the normative Deno integration suite from the repository root:
 
 ```sh
@@ -26,6 +31,6 @@ always disposed internally. The allocator may retain its high-water memory pages
 lifecycle test warms it once, runs 100 compile/generate/dispose cycles, requires zero live handles
 after every cycle, and permits at most one additional 64 KiB page after warm-up.
 
-The currently executable language subset is documented in the root README. Types, request data,
-guards, dynamic weights, captures, bindings, and complete messages already parse but are
-intentionally unavailable through compilation until their roadmap milestones land.
+The currently executable language subset is documented in the root README. Typed request data,
+guards, dynamic weights, calls, captures, and bindings execute in Rust, Deno, and Chrome. Complete
+localized messages remain unavailable until their formatter-boundary milestone lands.

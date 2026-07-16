@@ -159,8 +159,8 @@ production-content = { clause, clause-separator }, visible-body ;
 clause-separator    = space | newline, indent ;
 clause              = guard | binding ;
 guard               = "{", guard-expression, "}" ;
-binding             = "{", qualified-name, space, "as", space,
-                      identifier, "}" ;
+binding             = "{", qualified-name, [ space, "<-", space,
+                      argument-list ], space, "as", space, identifier, "}" ;
 
 guard-expression    = guard-or ;
 guard-or            = guard-and, { space, "or", space, guard-and } ;
@@ -233,7 +233,8 @@ validated transitively by the compiler.
 Simple `@name` consumes the longest qualified ASCII name. Use `@{name}` before a
 literal identifier-like suffix, as in `@{creature}s`. An emitting capture expands
 once, emits once, and makes its value available under the capture name. A braced
-binding expands once without emitting.
+binding expands once without emitting. Parameterized silent bindings reuse the
+ordinary argument grammar, for example `{person <- owner: $hero as companion}`.
 
 ## Output strings, escapes, and blocks
 
@@ -287,7 +288,7 @@ is literal text. An unterminated or nested comment is an error.
 | `[3]` | `WeightSyntax::Static` |
 | `[weight = urgency * 2]` | `WeightSyntax::Dynamic` expression tree |
 | `{mood is tense}` | `ClauseSyntax::Guard` |
-| `{common.name as hero}` | `ClauseSyntax::Binding` |
+| `{common.name as hero}` / `{rule <- value: $hero as item}` | `ClauseSyntax::Binding` plus optional arguments |
 | `@name` / `@{name}` | `BodyPartSyntax::RuleReference` |
 | `@{name as hero}` | `BodyPartSyntax::EmittingCapture` |
 | `$hero` | `BodyPartSyntax::ValueReference` |

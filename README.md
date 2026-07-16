@@ -413,6 +413,17 @@ Leading braces describe work that does not itself produce visible text:
 without emitting it. Guards must come before bindings: eligibility is decided
 before the runtime selects a production and evaluates its bindings.
 
+A later binding may call a parameterized rule with values from earlier bindings:
+
+```meco
+- {common.name as hero}
+  {common.companion <- owner: $hero as companion}
+  $hero arrived with $companion.
+```
+
+The `as companion` suffix names the silent result; the arguments between `<-`
+and `as` follow the same named and punned rules as an emitting call.
+
 The first non-braced item is the visible body. This is why a normal textual body
 does not need a separator:
 
@@ -716,14 +727,14 @@ versioned profile records, the composition audit, a version-discovery WASM ABI,
 and target-spanning tests. The WASM ABI now includes allocation, package,
 compilation, generation, result-copy, diagnostic, opaque-handle, disposal, and
 lifecycle-counter operations; the dependency-free TypeScript wrapper is tested in
-Deno and Chrome against the same artifact. The current executable subset supports static weights,
-ordinary references, literal/quoted/raw/block text, empty output, public entries,
-and productive recursion. Types, request data, dynamic weights, guards, bindings,
-captures, and complete messages are parsed but deliberately return
-`E_UNSUPPORTED_FEATURE` from compilation until their milestones implement their
-runtime semantics. Stateful sessions/diversity, formatter integration, the CLI,
-and editor tooling remain to be built. Use v1 for features outside this weighted
-v2 subset.
+Deno and Chrome against the same artifact. The executable subset now supports
+static and dynamic exact weights, typed scalar/enum request data, guards, typed
+rule calls, emitting captures, ordered silent bindings, ordinary references, all
+literal/block forms, empty output, public entries, productive recursion, and
+opt-in binding/selection traces with exact evaluated weights.
+Complete messages still deliberately return `E_UNSUPPORTED_FEATURE` until the
+formatter milestone. Stateful sessions/diversity, formatter integration, the CLI,
+and editor tooling remain to be built. Use v1 for features outside this v2 subset.
 
 ## Name
 

@@ -1,7 +1,7 @@
 const WIRE_VERSION = 1;
 const OP_PACKAGE_CREATE = 1;
 const OP_COMPILE = 2;
-const OP_GENERATE_WEIGHTED = 3;
+const OP_GENERATE_TYPED = 4;
 
 const PAYLOAD_ERROR = 0;
 const PAYLOAD_PACKAGE = 1;
@@ -81,6 +81,32 @@ export interface GenerationOutput {
   entry: string;
   expansions: number;
   samplerWords: number;
+  bindings: BindingOutput[];
+  selections: SelectionOutput[];
+}
+
+export type MecoValue =
+  | { kind: "text"; value: string }
+  | { kind: "number"; numerator: bigint; denominator: bigint }
+  | { kind: "boolean"; value: boolean }
+  | { kind: "enum"; value: string };
+
+export interface BindingOutput {
+  name: string;
+  emitted: boolean;
+  value: MecoValue;
+}
+
+export interface EligibleWeightOutput {
+  production: number;
+  baseWeight: { numerator: bigint; denominator: bigint };
+  normalizedWeight: bigint;
+}
+
+export interface SelectionOutput {
+  rule: string;
+  selectedProduction: number;
+  eligible: EligibleWeightOutput[];
 }
 
 export interface GenerationLimitOptions {
@@ -95,6 +121,9 @@ export interface GenerationOptions {
   entry?: string;
   seed: bigint;
   limits?: Partial<GenerationLimitOptions>;
+  data?: Readonly<Record<string, MecoValue>>;
+  traceBindings?: boolean;
+  traceSelections?: boolean;
 }
 
 const DEFAULT_LIMITS: GenerationLimitOptions = {
@@ -275,7 +304,17 @@ export class Mecojoni {
       writer.u32(limits.maxOutputScalars);
       writer.u32(limits.maxOutputBytes);
       writer.u32(limits.maxSamplerWords);
-      const decoded = this.invoke(OP_GENERATE_WEIGHTED, writer.finish());
+      writer.u8(options.traceBindings === true ? 1 : 0);
+      writer.u8(options.traceSelections === true ? 1 : 0);
+      const data = Object.entries(options.data ?? {}).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0
+      );
+      writer.u32(data.length);
+      for (const [name, value] of data) {
+        writer.string(name);
+        writer.value(value);
+      }
+      const decoded = this.invoke(OP_GENERATE_TYPED, writer.finish());
       if (decoded.status !== 0) return decodeFailure(decoded);
       expectKind(decoded, PAYLOAD_GENERATE);
       const value = {
@@ -283,6 +322,23 @@ export class Mecojoni {
         entry: decoded.reader.string(),
         expansions: decoded.reader.u32(),
         samplerWords: decoded.reader.u32(),
+        bindings: Array.from({ length: decoded.reader.u32() }, () => ({
+          name: decoded.reader.string(),
+          emitted: decodeBoolean(decoded.reader.u8(), "binding emitted flag"),
+          value: decoded.reader.value(),
+        })),
+        selections: Array.from({ length: decoded.reader.u32() }, () => ({
+          rule: decoded.reader.string(),
+          selectedProduction: decoded.reader.u32(),
+          eligible: Array.from({ length: decoded.reader.u32() }, () => ({
+            production: decoded.reader.u32(),
+            baseWeight: {
+              numerator: decoded.reader.i64(),
+              denominator: decoded.reader.u64(),
+            },
+            normalizedWeight: decoded.reader.u64(),
+          })),
+        })),
       };
       decoded.reader.finish();
       return { ok: true, value, diagnostics: [] };
@@ -409,6 +465,12 @@ function validateU32(value: number, name: string): void {
   }
 }
 
+function decodeBoolean(value: number, name: string): boolean {
+  if (value === 0) return false;
+  if (value === 1) return true;
+  throw new Error(`Invalid ${name}`);
+}
+
 function encodeStrict(value: string): Uint8Array {
   for (let index = 0; index < value.length; index++) {
     const unit = value.charCodeAt(index);
@@ -445,6 +507,38 @@ class Writer {
   u64(value: bigint): void {
     validateSeed(value);
     for (let shift = 0n; shift < 64n; shift += 8n) this.u8(Number((value >> shift) & 0xffn));
+  }
+
+  i64(value: bigint): void {
+    if (value < -((1n << 63n) - 1n) || value > (1n << 63n) - 1n) {
+      throw new Error("number numerator must be within -(2^63-1)..=2^63-1");
+    }
+    this.u64(BigInt.asUintN(64, value));
+  }
+
+  value(value: MecoValue): void {
+    switch (value.kind) {
+      case "text":
+        this.u8(0);
+        this.string(value.value);
+        break;
+      case "number":
+        if (value.denominator < 1n || value.denominator > (1n << 63n) - 1n) {
+          throw new Error("number denominator must be within 1..=2^63-1");
+        }
+        this.u8(1);
+        this.i64(value.numerator);
+        this.u64(value.denominator);
+        break;
+      case "boolean":
+        this.u8(2);
+        this.u8(value.value ? 1 : 0);
+        break;
+      case "enum":
+        this.u8(3);
+        this.string(value.value);
+        break;
+    }
   }
 
   bytes(value: Uint8Array): void {
@@ -497,6 +591,23 @@ class Reader {
     const value = this.#view.getBigUint64(this.#cursor, true);
     this.#cursor += 8;
     return value;
+  }
+
+  i64(): bigint {
+    return BigInt.asIntN(64, this.u64());
+  }
+
+  value(): MecoValue {
+    const kind = this.u8();
+    if (kind === 0) return { kind: "text", value: this.string() };
+    if (kind === 1) {
+      return { kind: "number", numerator: this.i64(), denominator: this.u64() };
+    }
+    if (kind === 2) {
+      return { kind: "boolean", value: decodeBoolean(this.u8(), "boolean value") };
+    }
+    if (kind === 3) return { kind: "enum", value: this.string() };
+    throw new Error(`Invalid Mecojoni value kind ${kind}`);
   }
 
   bytes(): Uint8Array {

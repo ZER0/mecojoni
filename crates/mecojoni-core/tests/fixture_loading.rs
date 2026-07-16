@@ -2,10 +2,10 @@ use std::{fs, path::PathBuf};
 
 use mecojoni_core::{
     ArgumentSyntax, BlockChomp, BodyPartSyntax, BodySyntax, ClauseSyntax, CompositionProfile,
-    GenerationLimits, GenerationRequest, LocationProfile, PackageInput, PackageSource, Rational,
-    ResolvedImport, ResourceProfile, SourceFile, SourceId, SplitMix64, ValueSyntax, WeightSyntax,
-    audit_composition, compile_package, diversity_factor_16_16, location_cooldown_multiplier,
-    parse_front_matter, parse_module, validate_package_input,
+    DataBinding, GenerationLimits, GenerationRequest, LocationProfile, PackageInput, PackageSource,
+    Rational, ResolvedImport, ResourceProfile, SourceFile, SourceId, SplitMix64, Value,
+    ValueSyntax, WeightSyntax, audit_composition, compile_package, diversity_factor_16_16,
+    location_cooldown_multiplier, parse_front_matter, parse_module, validate_package_input,
 };
 use std::str::FromStr;
 
@@ -13,6 +13,147 @@ fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(relative)
+}
+
+fn milestone5_package() -> PackageInput {
+    let directory = fixture_path("packages/milestone5");
+    PackageInput {
+        root_id: "root".to_string(),
+        modules: vec![
+            PackageSource {
+                canonical_id: "root".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(0),
+                    "root.meco.md",
+                    fs::read_to_string(directory.join("root.meco.md"))
+                        .expect("read Milestone 5 root"),
+                ),
+                resolved_imports: vec![ResolvedImport {
+                    authored_path: "./common.meco.md".to_string(),
+                    target_id: "common".to_string(),
+                }],
+            },
+            PackageSource {
+                canonical_id: "common".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(1),
+                    "common.meco.md",
+                    fs::read_to_string(directory.join("common.meco.md"))
+                        .expect("read Milestone 5 common module"),
+                ),
+                resolved_imports: vec![],
+            },
+        ],
+    }
+}
+
+fn request_data(mood: &str, urgency: Rational, enabled: bool) -> Vec<DataBinding> {
+    vec![
+        DataBinding::new("playerName".to_string(), Value::Text("Rin".to_string())),
+        DataBinding::new("mood".to_string(), Value::Enum(mood.to_string())),
+        DataBinding::new("urgency".to_string(), Value::Number(urgency)),
+        DataBinding::new("enabled".to_string(), Value::Boolean(enabled)),
+    ]
+}
+
+#[test]
+fn milestone5_multimodule_fixture_generates_bindings_guards_and_frames() {
+    let grammar = compile_package(&milestone5_package()).expect("Milestone 5 package compiles");
+    let tense_data = request_data("tense", Rational::new(2, 1).expect("number"), true);
+    let first = grammar
+        .generate_weighted(&GenerationRequest {
+            data: &tense_data,
+            trace_bindings: true,
+            ..GenerationRequest::with_seed(7)
+        })
+        .expect("tense fixture generates");
+    let replay = grammar
+        .generate_weighted(&GenerationRequest {
+            data: &tense_data,
+            trace_bindings: true,
+            ..GenerationRequest::with_seed(7)
+        })
+        .expect("tense fixture replays");
+
+    assert_eq!(first, replay);
+    assert_eq!(first.bindings().len(), 2);
+    assert_eq!(first.bindings()[0].name(), "hero");
+    assert_eq!(first.bindings()[1].name(), "companion");
+    assert!(first.text().contains("Rin") || first.text().contains("watches"));
+    let corpus = (0..8)
+        .map(|seed| {
+            let generated = grammar
+                .generate_weighted(&GenerationRequest {
+                    data: &tense_data,
+                    ..GenerationRequest::with_seed(seed)
+                })
+                .expect("seed corpus generates");
+            format!("{seed}|{}", generated.text())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        corpus,
+        fs::read_to_string(fixture_path("expected/milestone5-seeds-v1.outputs"))
+            .expect("read Milestone 5 corpus")
+            .trim_end()
+    );
+
+    let calm_data = request_data("calm", Rational::ZERO, true);
+    let calm = grammar
+        .generate_weighted(&GenerationRequest {
+            data: &calm_data,
+            trace_bindings: true,
+            ..GenerationRequest::with_seed(11)
+        })
+        .expect("calm fixture generates");
+    let Value::Text(hero) = calm.bindings()[0].value() else {
+        panic!("hero binding is text");
+    };
+    let Value::Text(witness) = calm.bindings()[1].value() else {
+        panic!("witness capture is text");
+    };
+    assert_eq!(
+        calm.text(),
+        format!("the crew welcomes {witness}; {witness} greets {hero}.")
+    );
+    let recursive = grammar
+        .generate_weighted(&GenerationRequest {
+            entry: Some("scene.recursion"),
+            data: &calm_data,
+            ..GenerationRequest::with_seed(0)
+        })
+        .expect("recursive parameter frames generate");
+    assert_eq!(recursive.text(), "inner");
+}
+
+#[test]
+fn milestone5_invalid_files_report_stable_semantic_codes() {
+    let cases = [
+        ("type-mismatch.meco.md", "E_TYPE_MISMATCH"),
+        ("guard-binding.meco.md", "E_VALUE_NAME"),
+        ("weight-binding.meco.md", "E_VALUE_NAME"),
+        ("forward-capture.meco.md", "E_VALUE_NAME"),
+        ("shadow-input.meco.md", "E_BINDING_NAME"),
+        ("unused-binding.meco.md", "E_BINDING_NAME"),
+    ];
+    for (index, (name, expected)) in cases.iter().enumerate() {
+        let path = fixture_path(&format!("packages/milestone5-invalid/{name}"));
+        let package = PackageInput {
+            root_id: "root".to_string(),
+            modules: vec![PackageSource {
+                canonical_id: "root".to_string(),
+                source: SourceFile::new(
+                    SourceId::new(u32::try_from(index).expect("fixture index")),
+                    path.display().to_string(),
+                    fs::read_to_string(path).expect("read invalid Milestone 5 fixture"),
+                ),
+                resolved_imports: vec![],
+            }],
+        };
+        let error = compile_package(&package).expect_err("invalid semantic fixture must fail");
+        assert_eq!(error.diagnostics()[0].code().as_str(), *expected, "{name}");
+    }
 }
 
 #[test]
@@ -102,6 +243,9 @@ fn loads_every_module_in_a_real_package_from_the_filesystem() {
             entry: Some("fixture.greeting"),
             seed: 0,
             limits: GenerationLimits::default(),
+            data: &[],
+            trace_bindings: false,
+            trace_selections: false,
         })
         .expect("filesystem package generates");
     assert_eq!(result.text(), "Hello, world!");
@@ -167,6 +311,9 @@ fn weighted_package_matches_the_seeded_filesystem_corpus() {
                 entry: Some(entry),
                 seed,
                 limits: GenerationLimits::default(),
+                data: &[],
+                trace_bindings: false,
+                trace_selections: false,
             })
             .expect("explicit entry generates")
     };
@@ -223,6 +370,9 @@ fn deep_filesystem_grammar_uses_the_heap_stack_and_exact_limits() {
                 max_expansions: 2_048,
                 ..GenerationLimits::default()
             },
+            data: &[],
+            trace_bindings: false,
+            trace_selections: false,
         })
         .expect("looser named test limits permit the whole chain");
     assert_eq!(result.text(), "finished");

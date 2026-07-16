@@ -58,6 +58,7 @@ pub enum ClauseSyntax {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingSyntax {
     pub rule: Spanned<String>,
+    pub arguments: Vec<ArgumentSyntax>,
     pub name: Spanned<String>,
     pub span: Span,
 }

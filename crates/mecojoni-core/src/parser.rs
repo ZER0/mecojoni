@@ -519,12 +519,19 @@ fn parse_clause_prefixes<'a>(
         };
         let inner = &text[1..close];
         let clause_span = span(source, start, start + close + 1);
-        if let Some((rule, name)) = inner.split_once(" as ") {
+        if let Some((call, name)) = inner.rsplit_once(" as ") {
+            let (rule, arguments) = if let Some((rule, arguments)) = call.split_once(" <- ") {
+                let arguments_start = start + 1 + rule.len() + 4;
+                (rule, parse_arguments(source, arguments, arguments_start)?)
+            } else {
+                (call, Vec::new())
+            };
             let rule_span = span(source, start + 1, start + 1 + rule.len());
-            let name_start = start + 1 + rule.len() + 4;
+            let name_start = start + 1 + call.len() + 4;
             let name_span = span(source, name_start, name_start + name.len());
             clauses.push(ClauseSyntax::Binding(BindingSyntax {
                 rule: parsed_identifier(rule, rule_span, true)?,
+                arguments,
                 name: parsed_identifier(name, name_span, false)?,
                 span: clause_span,
             }));
@@ -1775,6 +1782,7 @@ mod tests {
             "# arrival\n",
             "- {mood is tense}\n",
             "  {common.name as hero}\n",
+            "  {common.companion <- owner: $hero as companion}\n",
             "  &arrival <- hero: $hero\n",
             "# intro\n",
             "- @{common.name as hero} arrived. $hero waved.\n",
@@ -1784,6 +1792,13 @@ mod tests {
 
         assert!(matches!(production.clauses[0], ClauseSyntax::Guard(_)));
         assert!(matches!(production.clauses[1], ClauseSyntax::Binding(_)));
+        assert!(matches!(
+            production.clauses[2],
+            ClauseSyntax::Binding(ref binding)
+                if binding.arguments.len() == 1
+                    && binding.arguments[0].name.value() == "owner"
+                    && binding.name.value() == "companion"
+        ));
         assert!(matches!(
             production.body,
             BodySyntax::Parts(ref parts) if matches!(parts[0], BodyPartSyntax::MessageCall(_))

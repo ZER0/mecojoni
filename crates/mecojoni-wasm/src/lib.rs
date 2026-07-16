@@ -10,8 +10,9 @@ extern crate alloc;
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 use mecojoni_core::{
-    CompiledGrammar, Diagnostic, GenerationLimits, GenerationRequest, MecoError, PackageInput,
-    PackageSource, ResolvedImport, Severity, SourceFile, SourceId, compile_package,
+    CompiledGrammar, DataBinding, Diagnostic, GenerationLimits, GenerationRequest, MecoError,
+    PackageInput, PackageSource, Rational, ResolvedImport, Severity, SourceFile, SourceId, Value,
+    compile_package,
 };
 
 mod wire;
@@ -27,6 +28,7 @@ pub const ABI_VERSION: u32 = 1;
 pub const OP_PACKAGE_CREATE: u32 = 1;
 pub const OP_COMPILE: u32 = 2;
 pub const OP_GENERATE_WEIGHTED: u32 = 3;
+pub const OP_GENERATE_TYPED: u32 = 4;
 
 pub const STATUS_SUCCESS: u32 = 0;
 pub const STATUS_ERROR: u32 = 1;
@@ -41,6 +43,7 @@ const MAX_MODULES: usize = 4_096;
 const MAX_IMPORTS_PER_MODULE: usize = 4_096;
 const MAX_STRING_BYTES: usize = 1_048_576;
 const MAX_SOURCE_BYTES: usize = 16_777_216;
+const MAX_REQUEST_VALUES: usize = 4_096;
 
 /// Returns the ABI version before any allocation or handle operation is attempted.
 #[allow(unsafe_code)]
@@ -227,7 +230,8 @@ fn dispatch(state: &mut State, operation: u32, input: &[u8]) -> u32 {
     match operation {
         OP_PACKAGE_CREATE => package_create(state, input),
         OP_COMPILE => compile(state, input),
-        OP_GENERATE_WEIGHTED => generate_weighted(state, input),
+        OP_GENERATE_WEIGHTED => generate_weighted(state, input, false),
+        OP_GENERATE_TYPED => generate_weighted(state, input, true),
         _ => state.add_error(AbiDiagnostic::new(
             "E_ABI_OPERATION",
             format!("unknown ABI operation {operation}"),
@@ -268,8 +272,8 @@ fn compile(state: &mut State, input: &[u8]) -> u32 {
     state.add_value_result(HandleValue::Grammar(Box::new(grammar)), payload)
 }
 
-fn generate_weighted(state: &mut State, input: &[u8]) -> u32 {
-    let request = match decode_generation_request(input) {
+fn generate_weighted(state: &mut State, input: &[u8], typed: bool) -> u32 {
+    let request = match decode_generation_request(input, typed) {
         Ok(request) => request,
         Err(diagnostic) => return state.add_error(diagnostic),
     };
@@ -280,6 +284,9 @@ fn generate_weighted(state: &mut State, input: &[u8]) -> u32 {
                 entry,
                 seed: request.seed,
                 limits: request.limits,
+                data: &request.data,
+                trace_bindings: request.trace_bindings,
+                trace_selections: request.trace_selections,
             })
         }
         Some(value) => {
@@ -296,7 +303,7 @@ fn generate_weighted(state: &mut State, input: &[u8]) -> u32 {
             status: STATUS_SUCCESS,
             value_handle: 0,
             value_claimed: false,
-            payload: encode_generation_success(&result),
+            payload: encode_generation_success(&result, typed),
         }),
         Err(error) => add_core_error(state, &error),
     }
@@ -307,6 +314,9 @@ struct AbiGenerationRequest {
     seed: u64,
     entry: Option<String>,
     limits: GenerationLimits,
+    data: Vec<DataBinding>,
+    trace_bindings: bool,
+    trace_selections: bool,
 }
 
 fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
@@ -322,7 +332,10 @@ fn decode_handle_request(input: &[u8]) -> Result<u32, AbiDiagnostic> {
     Ok(handle)
 }
 
-fn decode_generation_request(input: &[u8]) -> Result<AbiGenerationRequest, AbiDiagnostic> {
+fn decode_generation_request(
+    input: &[u8],
+    typed: bool,
+) -> Result<AbiGenerationRequest, AbiDiagnostic> {
     let mut decoder = decoder(input)?;
     let grammar = decoder.u32().map_err(wire_diagnostic)?;
     let seed = decoder.u64().map_err(wire_diagnostic)?;
@@ -336,6 +349,38 @@ fn decode_generation_request(input: &[u8]) -> Result<AbiGenerationRequest, AbiDi
         max_output_bytes: decoder.u32().map_err(wire_diagnostic)?,
         max_sampler_words: decoder.u32().map_err(wire_diagnostic)?,
     };
+    let (trace_bindings, trace_selections, data) = if typed {
+        let trace_bindings = match decoder.u8().map_err(wire_diagnostic)? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(AbiDiagnostic::new(
+                    "E_ABI_WIRE_VALUE",
+                    "binding trace flag must be 0 or 1",
+                ));
+            }
+        };
+        let trace_selections = match decoder.u8().map_err(wire_diagnostic)? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(AbiDiagnostic::new(
+                    "E_ABI_WIRE_VALUE",
+                    "selection trace flag must be 0 or 1",
+                ));
+            }
+        };
+        let value_count = count(&mut decoder, MAX_REQUEST_VALUES, "request value")?;
+        let mut data = Vec::with_capacity(value_count);
+        for _ in 0..value_count {
+            let name = decoder.string(MAX_STRING_BYTES).map_err(wire_diagnostic)?;
+            let value = decode_value(&mut decoder)?;
+            data.push(DataBinding::new(name, value));
+        }
+        (trace_bindings, trace_selections, data)
+    } else {
+        (false, false, Vec::new())
+    };
     decoder.finish().map_err(wire_diagnostic)?;
     if grammar == 0 {
         return Err(AbiDiagnostic::new(
@@ -348,7 +393,48 @@ fn decode_generation_request(input: &[u8]) -> Result<AbiGenerationRequest, AbiDi
         seed,
         entry,
         limits,
+        data,
+        trace_bindings,
+        trace_selections,
     })
+}
+
+fn decode_value(decoder: &mut Decoder<'_>) -> Result<Value, AbiDiagnostic> {
+    match decoder.u8().map_err(wire_diagnostic)? {
+        0 => decoder
+            .string(MAX_STRING_BYTES)
+            .map(Value::Text)
+            .map_err(wire_diagnostic),
+        1 => {
+            let numerator =
+                i64::from_le_bytes(decoder.u64().map_err(wire_diagnostic)?.to_le_bytes());
+            let denominator = decoder.u64().map_err(wire_diagnostic)?;
+            Rational::new(numerator, denominator)
+                .map(Value::Number)
+                .map_err(|error| {
+                    AbiDiagnostic::new(
+                        "E_ABI_WIRE_VALUE",
+                        format!("invalid rational request value: {error}"),
+                    )
+                })
+        }
+        2 => match decoder.u8().map_err(wire_diagnostic)? {
+            0 => Ok(Value::Boolean(false)),
+            1 => Ok(Value::Boolean(true)),
+            _ => Err(AbiDiagnostic::new(
+                "E_ABI_WIRE_VALUE",
+                "boolean request value must be 0 or 1",
+            )),
+        },
+        3 => decoder
+            .string(MAX_STRING_BYTES)
+            .map(Value::Enum)
+            .map_err(wire_diagnostic),
+        _ => Err(AbiDiagnostic::new(
+            "E_ABI_WIRE_VALUE",
+            "unknown request value kind",
+        )),
+    }
 }
 
 fn decode_package(input: &[u8]) -> Result<PackageInput, AbiDiagnostic> {
@@ -477,13 +563,57 @@ fn encode_compile_success(grammar: &CompiledGrammar) -> Vec<u8> {
     encoder.into_bytes()
 }
 
-fn encode_generation_success(result: &mecojoni_core::GenerationResult) -> Vec<u8> {
+fn encode_generation_success(result: &mecojoni_core::GenerationResult, typed: bool) -> Vec<u8> {
     let mut encoder = payload(PAYLOAD_GENERATE);
     encoder.string(result.text());
     encoder.string(result.entry());
     encoder.u32(result.expansions());
     encoder.u32(result.sampler_words());
+    if typed {
+        encoder.u32(u32::try_from(result.bindings().len()).unwrap_or(u32::MAX));
+        for binding in result.bindings() {
+            encoder.string(binding.name());
+            encoder.u8(u8::from(binding.emitted()));
+            encode_value(&mut encoder, binding.value());
+        }
+        encoder.u32(u32::try_from(result.selections().len()).unwrap_or(u32::MAX));
+        for selection in result.selections() {
+            encoder.string(selection.rule());
+            encoder.u32(selection.selected_production());
+            encoder.u32(u32::try_from(selection.eligible().len()).unwrap_or(u32::MAX));
+            for weight in selection.eligible() {
+                encoder.u32(weight.production());
+                encoder.u64(u64::from_le_bytes(
+                    weight.base_weight().numerator().to_le_bytes(),
+                ));
+                encoder.u64(weight.base_weight().denominator());
+                encoder.u64(weight.normalized_weight());
+            }
+        }
+    }
     encoder.into_bytes()
+}
+
+fn encode_value(encoder: &mut Encoder, value: &Value) {
+    match value {
+        Value::Text(value) => {
+            encoder.u8(0);
+            encoder.string(value);
+        }
+        Value::Number(value) => {
+            encoder.u8(1);
+            encoder.u64(u64::from_le_bytes(value.numerator().to_le_bytes()));
+            encoder.u64(value.denominator());
+        }
+        Value::Boolean(value) => {
+            encoder.u8(2);
+            encoder.u8(u8::from(*value));
+        }
+        Value::Enum(value) => {
+            encoder.u8(3);
+            encoder.string(value);
+        }
+    }
 }
 
 fn encode_abi_error(code: &str, message: &str) -> Vec<u8> {
@@ -705,8 +835,8 @@ mod tests {
 
     use super::{
         ABI_VERSION, HandleKind, HandleValue, OP_COMPILE, OP_GENERATE_WEIGHTED, OP_PACKAGE_CREATE,
-        PAYLOAD_ERROR, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION, dispatch,
-        meco_abi_version, meco_core_api_version,
+        PAYLOAD_ERROR, PAYLOAD_GENERATE, STATUS_ERROR, STATUS_SUCCESS, State, WIRE_VERSION,
+        dispatch, meco_abi_version, meco_core_api_version,
     };
     use crate::wire::{Decoder, Encoder};
 
@@ -779,6 +909,15 @@ mod tests {
             state.result(generation_result).expect("result").status,
             STATUS_SUCCESS
         );
+        let generation_payload = &state.result(generation_result).expect("result").payload;
+        let mut legacy = Decoder::new(generation_payload);
+        assert_eq!(legacy.u32(), Ok(WIRE_VERSION));
+        assert_eq!(legacy.u32(), Ok(PAYLOAD_GENERATE));
+        assert!(legacy.string(1_024).is_ok());
+        assert!(legacy.string(1_024).is_ok());
+        assert!(legacy.u32().is_ok());
+        assert!(legacy.u32().is_ok());
+        assert_eq!(legacy.finish(), Ok(()));
         assert!(generation_result > compile_result && compile_result > package_result);
         for handle in [
             package_result,

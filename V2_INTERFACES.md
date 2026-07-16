@@ -41,20 +41,55 @@ remains legal subject to graph analysis and runtime limits.
 `compile_package(&PackageInput)` parses and resolves the complete package into a
 private indexed `CompiledGrammar`. Public queries expose entry names, a default
 entry, immutable rule-analysis facts, and compiler warnings without exposing
-mutable rule or production collections. The first executable subset includes
-static exact weights, ordinary rule references, all literal/block forms, empty
-output, and productive recursion. Parsed later-phase features fail compilation
-with `E_UNSUPPORTED_FEATURE` until their runtime contracts are implemented.
+mutable rule or production collections. The executable subset includes exact
+static/dynamic weights, typed scalar and enum data, guards, typed calls, captures,
+ordered bindings, ordinary rule references, all literal/block forms, empty output,
+and productive recursion. Complete external messages remain the one parsed
+later-phase body feature that fails with `E_UNSUPPORTED_FEATURE`.
 
 `CompiledGrammar::generate_weighted(&GenerationRequest)` is stateless. A request
-contains a seed, an optional qualified public entry, and explicit depth,
-expansion, output-scalar, output-byte, and sampler-word limits. Omitting the entry
-uses the root default or returns `E_NO_ENTRY`. Each rule selection—including a
+contains a seed, an optional qualified public entry, an immutable `&[DataBinding]`,
+optional binding- and selection-trace flags, and explicit depth, expansion, output-scalar,
+output-byte, and sampler-word limits. `Value` currently owns text, an exact
+`Rational`, a boolean, or a finite enum member. Root inputs use their bare name in
+request data; imported-module inputs use `declared-module.input`. Missing, extra,
+duplicate, wrongly typed, and unknown enum values are rejected before sampling.
+Omitting the entry uses the root default or returns `E_NO_ENTRY`. Each rule selection—including a
 single-production rule—uses unbiased `splitmix64/1` rejection sampling and
 therefore consumes at least one PRNG word. Expansion uses heap frames with a body
 cursor, so native call-stack depth and production width do not define language
 limits. `GenerationResult` returns text, the resolved entry, and exact expansion
-and sampler-word counters.
+and sampler-word counters plus optional ordered `BindingTrace` values.
+
+```rust
+let data = [
+    DataBinding::new("playerName".into(), Value::Text("Rin".into())),
+    DataBinding::new("mood".into(), Value::Enum("tense".into())),
+    DataBinding::new("urgency".into(), Value::Number(Rational::new(2, 1)?)),
+];
+let result = grammar.generate_weighted(&GenerationRequest {
+    data: &data,
+    trace_bindings: true,
+    trace_selections: true,
+    ..GenerationRequest::with_seed(7)
+})?;
+```
+
+The TypeScript equivalent passes discriminated values so no JavaScript number is
+silently rounded:
+
+```ts
+meco.generateWeighted(grammar, {
+  seed: 7n,
+  data: {
+    playerName: { kind: "text", value: "Rin" },
+    mood: { kind: "enum", value: "tense" },
+    urgency: { kind: "number", numerator: 2n, denominator: 1n },
+  },
+  traceBindings: true,
+  traceSelections: true,
+});
+```
 
 ## WebAssembly ABI (`meco-wasm/1`)
 
@@ -113,11 +148,21 @@ are rejected, and trailing bytes are errors.
 | --- | ---: | --- | --- |
 | package create | 1 | `str root`, module count; each module has canonical ID, source ID/name/bytes, and resolved import pairs | package handle |
 | compile | 2 | package handle | grammar handle plus entries/default/warnings payload |
-| weighted generate | 3 | grammar handle, `u64` seed, optional entry, five `u32` limits | text/entry/work-counter payload |
+| weighted generate (legacy scalar-free request) | 3 | grammar handle, `u64` seed, optional entry, five `u32` limits | text/entry/work-counter payload |
+| typed weighted generate | 4 | operation-3 fields plus trace flags and typed request-value map | text/entry/work-counter, binding-trace, and selection-trace payload |
 
 Generation limits are depth, expansions, output Unicode scalars, output UTF-8
 bytes, and sampler words in that order. A `u64` is always little-endian and the
 TypeScript API accepts it as `bigint`.
+
+Operation 3 remains byte-for-byte compatible with the first ABI-1 vertical slice;
+operation 4 is the additive typed extension used by current wrappers. Request
+values use a one-byte kind: text `0` plus `str`; number `1` plus signed
+two's-complement `i64` numerator and positive `u64` denominator; boolean `2` plus
+`0` or `1`; enum `3` plus its member `str`. The request map is canonically sorted
+by the TypeScript wrapper. Generation binding traces encode name, emitted flag,
+and the same typed value form. Selection traces encode the qualified rule, winner,
+and every eligible production's exact rational plus normalized integer weight.
 
 Result access is read-only and bounded:
 

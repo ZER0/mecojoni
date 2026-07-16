@@ -140,24 +140,24 @@ Deno, and a browser, with equivalent structured diagnostics.
 
 Implement the v2 authoring features that solve v1's main composition limits.
 
-- [ ] Implement core scalar types, finite enums, immutable request data, and
+- [x] Implement core scalar types, finite enums, immutable request data, and
   runtime type validation.
-- [ ] Implement typed rule declarations using `# rule <- name: type`.
-- [ ] Implement `@rule <- ...` calls, explicit named arguments, shorthand
+- [x] Implement typed rule declarations using `# rule <- name: type`.
+- [x] Implement `@rule <- ...` calls, explicit named arguments, shorthand
   argument punning, arity checks, and type checks.
-- [ ] Implement restricted guard expressions and eligibility selection.
-- [ ] Implement `[weight = expression]` using immutable number inputs/parameters,
+- [x] Implement restricted guard expressions and eligibility selection.
+- [x] Implement `[weight = expression]` using immutable number inputs/parameters,
   bounded rational arithmetic, zero-weight ineligibility, and trace/replay data.
-- [ ] Reject dynamic-weight access to bindings, captures, rules, messages,
+- [x] Reject dynamic-weight access to bindings, captures, rules, messages,
   callbacks, clocks, and ambient state.
-- [ ] Enforce guards before bindings and reject same-production binding use in a
+- [x] Enforce guards before bindings and reject same-production binding use in a
   guard.
-- [ ] Implement emitting capture `@{rule as name}`.
-- [ ] Implement ordered non-emitting binding `{rule as name}`.
-- [ ] Enforce lexical scope, immutability, no shadowing, no forward references,
+- [x] Implement emitting capture `@{rule as name}`.
+- [x] Implement ordered non-emitting binding `{rule as name}`.
+- [x] Enforce lexical scope, immutability, no shadowing, no forward references,
   and explicit parameter passing to child rules.
-- [ ] Make all bindings candidate-local and traceable.
-- [ ] Add integration fixtures for host data, enums, dynamic weights, multiple
+- [x] Make all bindings candidate-local and traceable.
+- [x] Add integration fixtures for host data, enums, dynamic weights, multiple
   bindings, recursion frames, invalid calls, and deterministic binding order.
 
 **Exit gate:** the guarded, parameterized, and binding-heavy examples embedded in

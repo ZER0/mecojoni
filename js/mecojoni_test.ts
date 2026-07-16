@@ -46,10 +46,36 @@ async function weightedPackage(): Promise<PackageDescription> {
   };
 }
 
+async function milestone5Package(): Promise<PackageDescription> {
+  const fixture = new URL(
+    "../crates/mecojoni-core/tests/fixtures/packages/milestone5/",
+    import.meta.url,
+  );
+  return {
+    rootId: "root",
+    modules: [
+      {
+        canonicalId: "root",
+        sourceId: 0,
+        sourceName: "root.meco.md",
+        source: await Deno.readTextFile(new URL("root.meco.md", fixture)),
+        resolvedImports: [{ authoredPath: "./common.meco.md", targetId: "common" }],
+      },
+      {
+        canonicalId: "common",
+        sourceId: 1,
+        sourceName: "common.meco.md",
+        source: await Deno.readTextFile(new URL("common.meco.md", fixture)),
+        resolvedImports: [],
+      },
+    ],
+  };
+}
+
 Deno.test("Deno compiles and generates the native weighted seed corpus", async () => {
   const meco = await instantiate();
   assertEquals(meco.abiVersion, 1);
-  assertEquals(meco.coreApiVersion, 1);
+  assertEquals(meco.coreApiVersion, 2);
   const compiled = meco.compilePackage(await weightedPackage());
   assert(compiled.ok, compiled.ok ? "" : compiled.error.message);
   try {
@@ -98,6 +124,71 @@ Deno.test("Deno receives structured compiler diagnostics with bigint spans", asy
   assertEquals(compiled.diagnostics[0].span?.sourceId, 7);
   assert(typeof compiled.diagnostics[0].span?.start.byte === "bigint", "span is not bigint-safe");
   assertEquals(meco.liveHandleCount, 0, "error path leaked handles");
+});
+
+Deno.test("Deno executes typed data, guards, dynamic weights, calls, and bindings", async () => {
+  const meco = await instantiate();
+  const compiled = meco.compilePackage(await milestone5Package());
+  assert(compiled.ok, compiled.ok ? "" : compiled.error.message);
+  const data = {
+    playerName: { kind: "text" as const, value: "Rin" },
+    mood: { kind: "enum" as const, value: "tense" },
+    urgency: { kind: "number" as const, numerator: 2n, denominator: 1n },
+    enabled: { kind: "boolean" as const, value: true },
+  };
+  try {
+    const outputs: string[] = [];
+    for (let seed = 0n; seed < 8n; seed++) {
+      const generated = meco.generateWeighted(compiled.value, {
+        seed,
+        data,
+        traceBindings: seed === 7n,
+        traceSelections: seed === 7n,
+      });
+      assert(generated.ok, generated.ok ? "" : generated.error.message);
+      outputs.push(`${seed}|${generated.value.text}`);
+      if (seed === 7n) {
+        assertEquals(generated.value.bindings.map((binding) => binding.name), [
+          "hero",
+          "companion",
+        ]);
+        assert(
+          generated.value.bindings.every((binding) => !binding.emitted),
+          "silent bindings were reported as emitted",
+        );
+        const alert = generated.value.selections.find((selection) =>
+          selection.rule === "scene.alert"
+        );
+        assert(alert !== undefined, "dynamic alert selection trace is missing");
+        assertEquals(
+          alert.eligible.map((weight) => [
+            weight.production,
+            weight.baseWeight.numerator.toString(),
+            weight.baseWeight.denominator.toString(),
+            weight.normalizedWeight.toString(),
+          ]),
+          [[0, "4", "1", "4"], [1, "1", "1", "1"]],
+        );
+      }
+    }
+    const expected = await Deno.readTextFile(
+      new URL(
+        "../crates/mecojoni-core/tests/fixtures/expected/milestone5-seeds-v1.outputs",
+        import.meta.url,
+      ),
+    );
+    assertEquals(outputs.join("\n"), expected.trimEnd());
+    const recursive = meco.generateWeighted(compiled.value, {
+      entry: "scene.recursion",
+      seed: 0n,
+      data,
+    });
+    assert(recursive.ok, recursive.ok ? "" : recursive.error.message);
+    assertEquals(recursive.value.text, "inner");
+  } finally {
+    compiled.value.dispose();
+  }
+  assertEquals(meco.liveHandleCount, 0);
 });
 
 Deno.test("strict JS strings reject unpaired UTF-16 before WASM allocation", async () => {

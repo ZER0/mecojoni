@@ -3,8 +3,9 @@
 > This document is the target design, not a claim that every feature already
 > exists. The portable workspace, complete recovering source parser, immutable
 > package compiler, iterative `weighted/1` generator, deterministic primitives,
-> package boundary, handwritten WASM ABI, Deno/browser wrapper, and initial audit
-> are implemented; completion is tracked in `ROADMAP.md`.
+> typed request/guard/binding runtime, package boundary, handwritten WASM ABI,
+> Deno/browser wrapper, and initial audit are implemented; completion is tracked
+> in `ROADMAP.md`.
 
 The syntax in `README.md` is authoritative. `V2_SYNTAX.md` is its formal lexical
 companion and `V2_INTERFACES.md` freezes host boundaries. Any syntax change must
@@ -503,6 +504,7 @@ Using different syntax makes ownership and emission behavior visible:
 | `@{common.name}` | A delimited rule reference, used where a suffix or complex form needs an explicit boundary. |
 | `{mood is tense}` | A non-emitting guard that makes the production eligible only when true. |
 | `{common.name as hero}` | A non-emitting binding that expands once and binds as `hero`; it precedes the visible body. |
+| `{common.companion <- owner: $hero as companion}` | Call a parameterized rule silently and bind its result; only earlier values are in scope. |
 | `$hero` or `$playerName` | Reference a generation-local binding or immutable host input. `${hero}` is available where an explicit identifier boundary is needed. Runtime values are never reparsed as source. |
 | `&pickup-common <- player: $playerName` | Resolve a stable external message and pass named arguments. After `<-`, `$hero` is sugar for `hero: $hero`. |
 | `# greeting <- name: text` | Declare a rule's typed parameters; `@greeting <- name: $playerName` supplies them and emits the expanded rule. |
@@ -614,7 +616,8 @@ The production contract is:
 3. Evaluate the chosen production's non-emitting bindings from left to right.
 4. Expand the visible body.
 
-A later binding may use an earlier binding as a named argument, but forward
+A later binding may use an earlier binding as a named argument with
+`{rule <- argument: $value as name}`, but forward
 references are errors. A guard cannot use a binding declared by its own production,
 because eligibility and weighted selection must be known before any binding is
 sampled. Reordering bindings is a seeded-output change because their PRNG and

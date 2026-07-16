@@ -44,6 +44,13 @@ impl DiagnosticCode {
     pub const UNDEFINED_RULE: Self = Self("E_UNDEFINED_RULE");
     pub const RULE_VISIBILITY: Self = Self("E_RULE_VISIBILITY");
     pub const RULE_ARITY: Self = Self("E_RULE_ARITY");
+    pub const TYPE: Self = Self("E_TYPE");
+    pub const TYPE_MISMATCH: Self = Self("E_TYPE_MISMATCH");
+    pub const VALUE_NAME: Self = Self("E_VALUE_NAME");
+    pub const BINDING_NAME: Self = Self("E_BINDING_NAME");
+    pub const REQUEST_DATA: Self = Self("E_REQUEST_DATA");
+    pub const NO_ELIGIBLE_PRODUCTION: Self = Self("E_NO_ELIGIBLE_PRODUCTION");
+    pub const WEIGHT_VALUE: Self = Self("E_WEIGHT_VALUE");
     pub const UNSUPPORTED_FEATURE: Self = Self("E_UNSUPPORTED_FEATURE");
     pub const WEIGHT_OVERFLOW: Self = Self("E_WEIGHT_OVERFLOW");
     pub const UNPRODUCTIVE_RULE: Self = Self("E_UNPRODUCTIVE_RULE");

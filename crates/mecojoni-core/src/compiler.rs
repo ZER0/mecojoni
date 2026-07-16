@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     collections::VecDeque,
     format,
     string::{String, ToString},
@@ -7,9 +8,10 @@ use alloc::{
 };
 
 use crate::{
-    BodyPartSyntax, BodySyntax, ClauseSyntax, Diagnostic, DiagnosticCode, MecoError, MecoResult,
-    ModuleSyntax, PackageInput, Rational, Severity, Span, SplitMix64, WeightSyntax, parse_module,
-    validate_package_input,
+    ArgumentSyntax, BindingTrace, BodyPartSyntax, BodySyntax, ClauseSyntax, DataBinding,
+    Diagnostic, DiagnosticCode, EligibleWeightTrace, GuardExpression, GuardValue, MecoError,
+    MecoResult, ModuleSyntax, PackageInput, Rational, SelectionTrace, Severity, Span, SplitMix64,
+    Value, ValueSyntax, WeightExpression, WeightSyntax, parse_module, validate_package_input,
 };
 
 /// Compatibility identifier for independent exact weighted selection.
@@ -48,6 +50,12 @@ pub struct GenerationRequest<'a> {
     pub entry: Option<&'a str>,
     pub seed: u64,
     pub limits: GenerationLimits,
+    /// Immutable host values checked against the compiled input schema.
+    pub data: &'a [DataBinding],
+    /// Retain ordered candidate-local binding/capture values in the result.
+    pub trace_bindings: bool,
+    /// Retain exact eligible and normalized weights for every selection.
+    pub trace_selections: bool,
 }
 
 impl GenerationRequest<'_> {
@@ -57,6 +65,9 @@ impl GenerationRequest<'_> {
             entry: None,
             seed,
             limits: GenerationLimits::INTERACTIVE_WEIGHTED_V1,
+            data: &[],
+            trace_bindings: false,
+            trace_selections: false,
         }
     }
 }
@@ -68,6 +79,8 @@ pub struct GenerationResult {
     entry: String,
     expansions: u32,
     sampler_words: u32,
+    bindings: Vec<BindingTrace>,
+    selections: Vec<SelectionTrace>,
 }
 
 impl GenerationResult {
@@ -90,6 +103,16 @@ impl GenerationResult {
     pub const fn sampler_words(&self) -> u32 {
         self.sampler_words
     }
+
+    #[must_use]
+    pub fn bindings(&self) -> &[BindingTrace] {
+        &self.bindings
+    }
+
+    #[must_use]
+    pub fn selections(&self) -> &[SelectionTrace] {
+        &self.selections
+    }
 }
 
 /// Read-only graph facts retained for tooling without exposing mutable IR.
@@ -105,18 +128,105 @@ pub struct RuleAnalysis {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CompiledPart {
     Literal(String),
-    Rule(usize),
+    RuleCall {
+        rule: usize,
+        arguments: Vec<CompiledValue>,
+    },
+    Value(CompiledValue),
+    Capture {
+        rule: usize,
+        slot: usize,
+        name: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledValue {
+    Input(usize),
+    Local(usize),
+    Constant(Value),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledWeight {
+    Static(Rational),
+    Dynamic(CompiledWeightExpression),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledWeightExpression {
+    Literal(Rational),
+    Value(CompiledValue),
+    Add(Box<Self>, Box<Self>),
+    Subtract(Box<Self>, Box<Self>),
+    Multiply(Box<Self>, Box<Self>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledGuardValue {
+    Value(CompiledValue),
+    Constant(Value),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CompiledGuard {
+    Value(CompiledGuardValue),
+    Is(CompiledGuardValue, CompiledGuardValue),
+    IsNot(CompiledGuardValue, CompiledGuardValue),
+    Less(CompiledGuardValue, CompiledGuardValue),
+    LessOrEqual(CompiledGuardValue, CompiledGuardValue),
+    Greater(CompiledGuardValue, CompiledGuardValue),
+    GreaterOrEqual(CompiledGuardValue, CompiledGuardValue),
+    Not(Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledBinding {
+    rule: usize,
+    arguments: Vec<CompiledValue>,
+    slot: usize,
+    name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledProduction {
-    weight: u64,
+    weight: CompiledWeight,
+    guard: Option<CompiledGuard>,
+    bindings: Vec<CompiledBinding>,
     parts: Vec<CompiledPart>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ValueType {
+    Text,
+    Number,
+    Boolean,
+    Enum { name: String, variants: Vec<String> },
+}
+
+impl ValueType {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Text => "text",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Enum { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledInput {
+    external_name: String,
+    type_: ValueType,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledRule {
     name: String,
+    parameters: Vec<(String, ValueType)>,
     span: Span,
     productions: Vec<CompiledProduction>,
     analysis: RuleAnalysis,
@@ -126,6 +236,7 @@ struct CompiledRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledGrammar {
     rules: Vec<CompiledRule>,
+    inputs: Vec<CompiledInput>,
     entries: Vec<(String, usize)>,
     default_entry: Option<usize>,
     warnings: Vec<Diagnostic>,
@@ -175,71 +286,29 @@ impl CompiledGrammar {
         request: &GenerationRequest<'_>,
     ) -> MecoResult<GenerationResult> {
         let (entry_name, entry_rule) = self.resolve_entry(request.entry)?;
+        let inputs = self.validate_request_data(request.data)?;
         let mut random = SplitMix64::new(request.seed);
-        let mut output = String::new();
+        let mut buffers = vec![String::new()];
+        let mut frames = Vec::<RuntimeFrame>::new();
+        let mut binding_trace = Vec::new();
+        let mut selection_trace = Vec::new();
         let mut output_scalars = 0_u32;
         let mut expansions = 0_u32;
         let mut stack = vec![Work::Expand {
             rule: entry_rule,
+            arguments: Vec::new(),
+            sink: 0,
             depth: 1,
         }];
 
         while let Some(work) = stack.pop() {
             match work {
-                Work::Emit {
-                    rule,
-                    production,
-                    part,
-                } => {
-                    let CompiledPart::Literal(text) =
-                        &self.rules[rule].productions[production].parts[part]
-                    else {
-                        unreachable!("only literal work items are emitted");
-                    };
-                    let added = u32::try_from(text.chars().count()).map_err(|_| {
-                        runtime_error(
-                            DiagnosticCode::LIMIT_OUTPUT,
-                            "one literal exceeds the output scalar counter",
-                        )
-                    })?;
-                    output_scalars = output_scalars.checked_add(added).ok_or_else(|| {
-                        runtime_error(
-                            DiagnosticCode::LIMIT_OUTPUT,
-                            "generated output exceeds the scalar counter",
-                        )
-                    })?;
-                    if output_scalars > request.limits.max_output_scalars {
-                        return Err(runtime_error(
-                            DiagnosticCode::LIMIT_OUTPUT,
-                            format!(
-                                "generated output exceeds {} Unicode scalars",
-                                request.limits.max_output_scalars
-                            ),
-                        ));
-                    }
-                    let next_bytes = output.len().checked_add(text.len()).ok_or_else(|| {
-                        runtime_error(
-                            DiagnosticCode::LIMIT_OUTPUT,
-                            "generated output exceeds the byte counter",
-                        )
-                    })?;
-                    if u32::try_from(next_bytes)
-                        .map_or(true, |bytes| bytes > request.limits.max_output_bytes)
-                    {
-                        return Err(runtime_error(
-                            DiagnosticCode::LIMIT_OUTPUT,
-                            format!(
-                                "generated output exceeds {} UTF-8 bytes",
-                                request.limits.max_output_bytes
-                            ),
-                        ));
-                    }
-                    output.push_str(text);
-                }
                 Work::Continue {
                     rule,
                     production,
                     part,
+                    frame,
+                    sink,
                     depth,
                 } => {
                     let parts = &self.rules[rule].productions[production].parts;
@@ -250,21 +319,148 @@ impl CompiledGrammar {
                         rule,
                         production,
                         part: part + 1,
+                        frame,
+                        sink,
                         depth,
                     });
-                    stack.push(match compiled_part {
-                        CompiledPart::Literal(_) => Work::Emit {
+                    match compiled_part {
+                        CompiledPart::Literal(text) => append_output(
+                            &mut buffers[sink],
+                            text,
+                            &mut output_scalars,
+                            request.limits,
+                        )?,
+                        CompiledPart::Value(value) => {
+                            let value = runtime_value(value, &inputs, &frames[frame].values)?;
+                            let Value::Text(text) = value else {
+                                return Err(runtime_error(
+                                    DiagnosticCode::TYPE_MISMATCH,
+                                    "only text values can be emitted directly",
+                                ));
+                            };
+                            append_output(
+                                &mut buffers[sink],
+                                &text,
+                                &mut output_scalars,
+                                request.limits,
+                            )?;
+                        }
+                        CompiledPart::RuleCall { rule, arguments } => {
+                            let arguments =
+                                evaluate_arguments(arguments, &inputs, &frames[frame].values)?;
+                            stack.push(Work::Expand {
+                                rule: *rule,
+                                arguments,
+                                sink,
+                                depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                            });
+                        }
+                        CompiledPart::Capture { rule, slot, name } => {
+                            let start = buffers[sink].len();
+                            stack.push(Work::FinishCapture {
+                                frame,
+                                slot: *slot,
+                                name: name.clone(),
+                                sink,
+                                start,
+                            });
+                            stack.push(Work::Expand {
+                                rule: *rule,
+                                arguments: Vec::new(),
+                                sink,
+                                depth: depth.checked_add(1).unwrap_or(u32::MAX),
+                            });
+                        }
+                    }
+                }
+                Work::PrepareBinding {
+                    rule,
+                    production,
+                    binding,
+                    frame,
+                    sink,
+                    depth,
+                } => {
+                    let bindings = &self.rules[rule].productions[production].bindings;
+                    let Some(compiled_binding) = bindings.get(binding) else {
+                        stack.push(Work::Continue {
                             rule,
                             production,
-                            part,
-                        },
-                        CompiledPart::Rule(child) => Work::Expand {
-                            rule: *child,
-                            depth: depth.checked_add(1).unwrap_or(u32::MAX),
-                        },
+                            part: 0,
+                            frame,
+                            sink,
+                            depth,
+                        });
+                        continue;
+                    };
+                    let temporary_sink = buffers.len();
+                    buffers.push(String::new());
+                    stack.push(Work::PrepareBinding {
+                        rule,
+                        production,
+                        binding: binding + 1,
+                        frame,
+                        sink,
+                        depth,
+                    });
+                    stack.push(Work::FinishBinding {
+                        frame,
+                        slot: compiled_binding.slot,
+                        name: compiled_binding.name.clone(),
+                        sink: temporary_sink,
+                    });
+                    stack.push(Work::Expand {
+                        rule: compiled_binding.rule,
+                        arguments: evaluate_arguments(
+                            &compiled_binding.arguments,
+                            &inputs,
+                            &frames[frame].values,
+                        )?,
+                        sink: temporary_sink,
+                        depth: depth.checked_add(1).unwrap_or(u32::MAX),
                     });
                 }
-                Work::Expand { rule, depth } => {
+                Work::FinishBinding {
+                    frame,
+                    slot,
+                    name,
+                    sink,
+                } => {
+                    let text = core::mem::take(&mut buffers[sink]);
+                    let value = Value::Text(text);
+                    bind_runtime_value(&mut frames[frame], slot, value.clone())?;
+                    if request.trace_bindings {
+                        binding_trace.push(BindingTrace::new(name, value, false));
+                    }
+                }
+                Work::FinishCapture {
+                    frame,
+                    slot,
+                    name,
+                    sink,
+                    start,
+                } => {
+                    let text = buffers[sink]
+                        .get(start..)
+                        .ok_or_else(|| {
+                            runtime_error(
+                                DiagnosticCode::INVALID_SPAN,
+                                "capture output boundary is invalid",
+                            )
+                        })?
+                        .to_string();
+                    let value = Value::Text(text);
+                    bind_runtime_value(&mut frames[frame], slot, value.clone())?;
+                    if request.trace_bindings {
+                        binding_trace.push(BindingTrace::new(name, value, true));
+                    }
+                }
+                Work::Expand {
+                    rule,
+                    arguments,
+                    sink,
+                    depth,
+                } => {
                     if depth > request.limits.max_depth {
                         return Err(runtime_error(
                             DiagnosticCode::LIMIT_DEPTH,
@@ -283,17 +479,26 @@ impl CompiledGrammar {
                             format!("rule expansions exceed {}", request.limits.max_expansions),
                         ));
                     }
-
                     let compiled_rule = &self.rules[rule];
-                    let total = compiled_rule
-                        .productions
+                    if arguments.len() != compiled_rule.parameters.len() {
+                        return Err(runtime_error(
+                            DiagnosticCode::RULE_ARITY,
+                            format!(
+                                "rule `{}` expected {} arguments but received {}",
+                                compiled_rule.name,
+                                compiled_rule.parameters.len(),
+                                arguments.len()
+                            ),
+                        ));
+                    }
+                    let frame = frames.len();
+                    frames.push(RuntimeFrame { values: arguments });
+                    let weighted = eligible_weights(compiled_rule, &inputs, &frames[frame].values)?;
+                    let total = weighted
                         .iter()
-                        .try_fold(0_u64, |sum, production| sum.checked_add(production.weight))
+                        .try_fold(0_u64, |sum, weight| sum.checked_add(weight.normalized))
                         .ok_or_else(|| {
-                            runtime_error(
-                                DiagnosticCode::WEIGHT_OVERFLOW,
-                                "compiled weight total is outside the supported budget",
-                            )
+                            weight_runtime_overflow("eligible weight total overflowed")
                         })?;
                     let used = u32::try_from(random.words()).unwrap_or(u32::MAX);
                     let remaining = request.limits.max_sampler_words.saturating_sub(used);
@@ -308,11 +513,29 @@ impl CompiledGrammar {
                                 ),
                             )
                         })?;
-                    let production = select_production(&compiled_rule.productions, choice);
-                    stack.push(Work::Continue {
+                    let production = select_eligible_production(&weighted, choice);
+                    if request.trace_selections {
+                        selection_trace.push(SelectionTrace::new(
+                            compiled_rule.name.clone(),
+                            u32::try_from(production).unwrap_or(u32::MAX),
+                            weighted
+                                .iter()
+                                .map(|weight| {
+                                    EligibleWeightTrace::new(
+                                        u32::try_from(weight.production).unwrap_or(u32::MAX),
+                                        weight.base,
+                                        weight.normalized,
+                                    )
+                                })
+                                .collect(),
+                        ));
+                    }
+                    stack.push(Work::PrepareBinding {
                         rule,
                         production,
-                        part: 0,
+                        binding: 0,
+                        frame,
+                        sink,
                         depth,
                     });
                 }
@@ -320,11 +543,58 @@ impl CompiledGrammar {
         }
 
         Ok(GenerationResult {
-            text: output,
+            text: buffers.swap_remove(0),
             entry: entry_name.to_string(),
             expansions,
             sampler_words: u32::try_from(random.words()).unwrap_or(u32::MAX),
+            bindings: binding_trace,
+            selections: selection_trace,
         })
+    }
+
+    fn validate_request_data(&self, data: &[DataBinding]) -> MecoResult<Vec<Value>> {
+        if let Some(duplicate) = data.iter().enumerate().find_map(|(index, binding)| {
+            data[..index]
+                .iter()
+                .any(|previous| previous.name == binding.name)
+                .then_some(binding.name.as_str())
+        }) {
+            return Err(runtime_error(
+                DiagnosticCode::REQUEST_DATA,
+                format!("request data contains duplicate `{duplicate}`"),
+            ));
+        }
+        if let Some(unknown) = data.iter().find(|binding| {
+            !self
+                .inputs
+                .iter()
+                .any(|input| input.external_name == binding.name)
+        }) {
+            return Err(runtime_error(
+                DiagnosticCode::REQUEST_DATA,
+                format!("request data contains unknown input `{}`", unknown.name),
+            ));
+        }
+        let mut values = Vec::with_capacity(self.inputs.len());
+        for input in &self.inputs {
+            let binding = data
+                .iter()
+                .find(|binding| binding.name == input.external_name)
+                .ok_or_else(|| {
+                    runtime_error(
+                        DiagnosticCode::REQUEST_DATA,
+                        format!("request data is missing `{}`", input.external_name),
+                    )
+                })?;
+            validate_runtime_type(&binding.value, &input.type_).map_err(|message| {
+                runtime_error(
+                    DiagnosticCode::TYPE_MISMATCH,
+                    format!("input `{}` {message}", input.external_name),
+                )
+            })?;
+            values.push(binding.value.clone());
+        }
+        Ok(values)
     }
 
     fn resolve_entry(&self, requested: Option<&str>) -> MecoResult<(&str, usize)> {
@@ -351,28 +621,65 @@ impl CompiledGrammar {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Work {
     Expand {
         rule: usize,
+        arguments: Vec<Value>,
+        sink: usize,
         depth: u32,
-    },
-    Emit {
-        rule: usize,
-        production: usize,
-        part: usize,
     },
     Continue {
         rule: usize,
         production: usize,
         part: usize,
+        frame: usize,
+        sink: usize,
         depth: u32,
     },
+    PrepareBinding {
+        rule: usize,
+        production: usize,
+        binding: usize,
+        frame: usize,
+        sink: usize,
+        depth: u32,
+    },
+    FinishBinding {
+        frame: usize,
+        slot: usize,
+        name: String,
+        sink: usize,
+    },
+    FinishCapture {
+        frame: usize,
+        slot: usize,
+        name: String,
+        sink: usize,
+        start: usize,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeFrame {
+    values: Vec<Value>,
 }
 
 struct ModuleBuild<'a> {
     canonical_id: &'a str,
     syntax: ModuleSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModuleSchema {
+    types: Vec<(String, ValueType)>,
+    inputs: Vec<(String, usize, ValueType)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompileScope {
+    module: usize,
+    locals: Vec<(String, ValueType)>,
 }
 
 type EntryIndex = Vec<(String, usize)>;
@@ -389,6 +696,7 @@ struct CompiledEntries {
 /// Returns structured diagnostics for package identity, imports, exports,
 /// entries, visibility, references, arity, unsupported later-phase constructs,
 /// exact static weight totals, or reachable unproductive rules.
+#[allow(clippy::too_many_lines)]
 pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
     validate_package_input(package)?;
     let mut modules = Vec::with_capacity(package.modules.len());
@@ -417,33 +725,115 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
         rule_count += module.syntax.rules.len();
     }
 
-    let mut rules = Vec::with_capacity(rule_count);
+    let (schemas, inputs) = compile_schemas(&modules, root_module)?;
+    let mut rule_parameters = Vec::with_capacity(rule_count);
     for (module_index, module) in modules.iter().enumerate() {
         for rule in &module.syntax.rules {
-            let weights = normalize_static_weights(rule)?;
-            let mut productions = Vec::with_capacity(rule.productions.len());
-            for (production, weight) in rule.productions.iter().zip(weights) {
-                if !production.clauses.is_empty() {
-                    let span = match &production.clauses[0] {
-                        ClauseSyntax::Guard(guard) => guard.span(),
-                        ClauseSyntax::Binding(binding) => binding.span,
-                    };
+            let mut parameters = Vec::with_capacity(rule.parameters.len());
+            for parameter in &rule.parameters {
+                if parameters
+                    .iter()
+                    .any(|(name, _): &(String, ValueType)| name == parameter.name.value())
+                    || schemas[module_index]
+                        .inputs
+                        .iter()
+                        .any(|(name, _, _)| name == parameter.name.value())
+                {
                     return Err(source_error(
-                        DiagnosticCode::UNSUPPORTED_FEATURE,
-                        span,
-                        "guards and bindings are implemented in Milestone 5",
+                        DiagnosticCode::BINDING_NAME,
+                        parameter.name.span(),
+                        format!(
+                            "parameter `{}` shadows an existing value",
+                            parameter.name.value()
+                        ),
                     ));
                 }
-                let parts =
-                    lower_body(package, &modules, &offsets, module_index, &production.body)?;
-                productions.push(CompiledProduction { weight, parts });
+                parameters.push((
+                    parameter.name.value().clone(),
+                    resolve_type(&schemas[module_index], parameter.type_name.value()).ok_or_else(
+                        || {
+                            source_error(
+                                DiagnosticCode::TYPE,
+                                parameter.type_name.span(),
+                                format!("unknown type `{}`", parameter.type_name.value()),
+                            )
+                        },
+                    )?,
+                ));
             }
+            rule_parameters.push(parameters);
+        }
+    }
+
+    let mut rules = Vec::with_capacity(rule_count);
+    for (module_index, module) in modules.iter().enumerate() {
+        for (local_rule, rule) in module.syntax.rules.iter().enumerate() {
+            let global_rule = offsets[module_index] + local_rule;
+            let mut productions = Vec::with_capacity(rule.productions.len());
+            for production in &rule.productions {
+                let mut scope = CompileScope {
+                    module: module_index,
+                    locals: rule_parameters[global_rule].clone(),
+                };
+                let guard = compile_guards(&production.clauses, &scope, &schemas)?;
+                let weight = compile_weight(&production.weight, &scope, &schemas)?;
+                let mut bindings = Vec::new();
+                for clause in &production.clauses {
+                    let ClauseSyntax::Binding(binding) = clause else {
+                        continue;
+                    };
+                    ensure_new_local(&scope, &schemas, binding.name.value(), binding.name.span())?;
+                    let target = resolve_rule(
+                        package,
+                        &modules,
+                        &offsets,
+                        module_index,
+                        binding.rule.value(),
+                        binding.rule.span(),
+                    )?;
+                    let call = crate::CallSyntax {
+                        target: binding.rule.clone(),
+                        arguments: binding.arguments.clone(),
+                        span: binding.span,
+                    };
+                    let arguments =
+                        compile_call_arguments(&call, &rule_parameters[target], &scope, &schemas)?;
+                    let slot = scope.locals.len();
+                    bindings.push(CompiledBinding {
+                        rule: target,
+                        arguments,
+                        slot,
+                        name: binding.name.value().clone(),
+                    });
+                    scope
+                        .locals
+                        .push((binding.name.value().clone(), ValueType::Text));
+                }
+                let parts = lower_body(
+                    package,
+                    &modules,
+                    &offsets,
+                    &schemas,
+                    &rule_parameters,
+                    &mut scope,
+                    &production.body,
+                )?;
+                validate_bound_value_usage(production.span, &bindings, &parts)?;
+                productions.push(CompiledProduction {
+                    weight,
+                    guard,
+                    bindings,
+                    parts,
+                });
+            }
+            validate_static_weight_budget(rule.span, &productions)?;
             rules.push(CompiledRule {
                 name: format!(
                     "{}.{}",
                     module.syntax.front_matter.module().value(),
                     rule.name.value()
                 ),
+                parameters: rule_parameters[global_rule].clone(),
                 span: rule.span,
                 productions,
                 analysis: RuleAnalysis {
@@ -456,25 +846,24 @@ pub fn compile_package(package: &PackageInput) -> MecoResult<CompiledGrammar> {
         }
     }
 
-    if let Some(rule) = modules
-        .iter()
-        .flat_map(|module| module.syntax.rules.iter())
-        .find(|rule| !rule.parameters.is_empty())
-    {
-        return Err(source_error(
-            DiagnosticCode::UNSUPPORTED_FEATURE,
-            rule.span,
-            "typed parameter execution is implemented in Milestone 5",
-        ));
-    }
-
     let compiled_entries = compile_entries(&modules, &offsets, root_module)?;
     let entries = compiled_entries.entries;
     let default_entry = compiled_entries.default_entry;
+    if let Some((entry, rule)) = entries
+        .iter()
+        .find(|(_, rule)| !rules[*rule].parameters.is_empty())
+    {
+        return Err(source_error(
+            DiagnosticCode::RULE_ARITY,
+            rules[*rule].span,
+            format!("public entry `{entry}` cannot require rule parameters"),
+        ));
+    }
     analyze_graph(&mut rules, &entries)?;
     let warnings = recursion_warnings(&rules);
     Ok(CompiledGrammar {
         rules,
+        inputs,
         entries,
         default_entry,
         warnings,
@@ -644,11 +1033,139 @@ fn compile_entries(
     })
 }
 
+fn compile_schemas(
+    modules: &[ModuleBuild<'_>],
+    root: usize,
+) -> MecoResult<(Vec<ModuleSchema>, Vec<CompiledInput>)> {
+    let mut schemas = Vec::with_capacity(modules.len());
+    for module in modules {
+        let mut types = Vec::new();
+        for declaration in module.syntax.front_matter.types() {
+            if matches!(
+                declaration.name().value().as_str(),
+                "text" | "number" | "boolean"
+            ) {
+                return Err(source_error(
+                    DiagnosticCode::TYPE,
+                    declaration.name().span(),
+                    format!("`{}` is a built-in type", declaration.name().value()),
+                ));
+            }
+            types.push((
+                declaration.name().value().clone(),
+                ValueType::Enum {
+                    name: format!(
+                        "{}.{}",
+                        module.syntax.front_matter.module().value(),
+                        declaration.name().value()
+                    ),
+                    variants: declaration
+                        .variants()
+                        .iter()
+                        .map(|variant| variant.value().clone())
+                        .collect(),
+                },
+            ));
+        }
+        schemas.push(ModuleSchema {
+            types,
+            inputs: Vec::new(),
+        });
+    }
+    let mut inputs = Vec::new();
+    for (module_index, module) in modules.iter().enumerate() {
+        for declaration in module.syntax.front_matter.inputs() {
+            let type_ = resolve_type(&schemas[module_index], declaration.type_name().value())
+                .ok_or_else(|| {
+                    source_error(
+                        DiagnosticCode::TYPE,
+                        declaration.type_name().span(),
+                        format!("unknown type `{}`", declaration.type_name().value()),
+                    )
+                })?;
+            let external_name = if module_index == root {
+                declaration.name().value().clone()
+            } else {
+                format!(
+                    "{}.{}",
+                    module.syntax.front_matter.module().value(),
+                    declaration.name().value()
+                )
+            };
+            let index = inputs.len();
+            inputs.push(CompiledInput {
+                external_name,
+                type_: type_.clone(),
+            });
+            schemas[module_index]
+                .inputs
+                .push((declaration.name().value().clone(), index, type_));
+        }
+    }
+    Ok((schemas, inputs))
+}
+
+fn resolve_type(schema: &ModuleSchema, name: &str) -> Option<ValueType> {
+    match name {
+        "text" => Some(ValueType::Text),
+        "number" => Some(ValueType::Number),
+        "boolean" => Some(ValueType::Boolean),
+        _ => schema
+            .types
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, type_)| type_.clone()),
+    }
+}
+
+fn ensure_new_local(
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    name: &str,
+    span: Span,
+) -> MecoResult<()> {
+    if scope.locals.iter().any(|(candidate, _)| candidate == name)
+        || schemas[scope.module]
+            .inputs
+            .iter()
+            .any(|(candidate, _, _)| candidate == name)
+    {
+        return Err(source_error(
+            DiagnosticCode::BINDING_NAME,
+            span,
+            format!("binding `{name}` shadows an existing value"),
+        ));
+    }
+    Ok(())
+}
+
+fn lookup_value(
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    name: &str,
+) -> Option<(CompiledValue, ValueType)> {
+    if let Some((index, (_, type_))) = scope
+        .locals
+        .iter()
+        .enumerate()
+        .find(|(_, (candidate, _))| candidate == name)
+    {
+        return Some((CompiledValue::Local(index), type_.clone()));
+    }
+    schemas[scope.module]
+        .inputs
+        .iter()
+        .find(|(candidate, _, _)| candidate == name)
+        .map(|(_, index, type_)| (CompiledValue::Input(*index), type_.clone()))
+}
+
 fn lower_body(
     package: &PackageInput,
     modules: &[ModuleBuild<'_>],
     offsets: &[usize],
-    module: usize,
+    schemas: &[ModuleSchema],
+    rule_parameters: &[Vec<(String, ValueType)>],
+    scope: &mut CompileScope,
     body: &BodySyntax,
 ) -> MecoResult<Vec<CompiledPart>> {
     match body {
@@ -662,13 +1179,23 @@ fn lower_body(
             package,
             modules,
             offsets,
-            module,
+            schemas,
+            rule_parameters,
+            scope,
             block
                 .parts
                 .as_ref()
                 .expect("cooked blocks have parsed parts"),
         ),
-        BodySyntax::Parts(parts) => lower_parts(package, modules, offsets, module, parts),
+        BodySyntax::Parts(parts) => lower_parts(
+            package,
+            modules,
+            offsets,
+            schemas,
+            rule_parameters,
+            scope,
+            parts,
+        ),
     }
 }
 
@@ -676,7 +1203,9 @@ fn lower_parts(
     package: &PackageInput,
     modules: &[ModuleBuild<'_>],
     offsets: &[usize],
-    module: usize,
+    schemas: &[ModuleSchema],
+    rule_parameters: &[Vec<(String, ValueType)>],
+    scope: &mut CompileScope,
     parts: &[BodyPartSyntax],
 ) -> MecoResult<Vec<CompiledPart>> {
     let mut lowered = Vec::new();
@@ -688,47 +1217,83 @@ fn lower_parts(
                 }
             }
             BodyPartSyntax::RuleReference(reference) => {
-                lowered.push(CompiledPart::Rule(resolve_rule(
+                let target = resolve_rule(
                     package,
                     modules,
                     offsets,
-                    module,
+                    scope.module,
                     reference.value(),
                     reference.span(),
-                )?));
+                )?;
+                ensure_zero_arity(target, rule_parameters, reference.value(), reference.span())?;
+                lowered.push(CompiledPart::RuleCall {
+                    rule: target,
+                    arguments: Vec::new(),
+                });
             }
             BodyPartSyntax::RuleCall(call) => {
                 let target = resolve_rule(
                     package,
                     modules,
                     offsets,
-                    module,
+                    scope.module,
                     call.target.value(),
                     call.target.span(),
                 )?;
-                validate_call_arity(modules, offsets, target, call)?;
-                if !call.arguments.is_empty() {
-                    return Err(source_error(
-                        DiagnosticCode::UNSUPPORTED_FEATURE,
-                        call.span,
-                        "typed call arguments are implemented in Milestone 5",
-                    ));
-                }
-                lowered.push(CompiledPart::Rule(target));
+                lowered.push(CompiledPart::RuleCall {
+                    rule: target,
+                    arguments: compile_call_arguments(
+                        call,
+                        &rule_parameters[target],
+                        scope,
+                        schemas,
+                    )?,
+                });
             }
-            BodyPartSyntax::EmittingCapture { span, .. } => {
-                return Err(source_error(
-                    DiagnosticCode::UNSUPPORTED_FEATURE,
-                    *span,
-                    "captures and runtime values are implemented in Milestone 5",
-                ));
+            BodyPartSyntax::EmittingCapture {
+                rule,
+                name,
+                span: _,
+            } => {
+                ensure_new_local(scope, schemas, name.value(), name.span())?;
+                let target = resolve_rule(
+                    package,
+                    modules,
+                    offsets,
+                    scope.module,
+                    rule.value(),
+                    rule.span(),
+                )?;
+                ensure_zero_arity(target, rule_parameters, rule.value(), rule.span())?;
+                let slot = scope.locals.len();
+                lowered.push(CompiledPart::Capture {
+                    rule: target,
+                    slot,
+                    name: name.value().clone(),
+                });
+                scope.locals.push((name.value().clone(), ValueType::Text));
             }
             BodyPartSyntax::ValueReference(reference) => {
-                return Err(source_error(
-                    DiagnosticCode::UNSUPPORTED_FEATURE,
-                    reference.span(),
-                    "captures and runtime values are implemented in Milestone 5",
-                ));
+                let (value, type_) =
+                    lookup_value(scope, schemas, reference.value()).ok_or_else(|| {
+                        source_error(
+                            DiagnosticCode::VALUE_NAME,
+                            reference.span(),
+                            format!("undefined value `{}`", reference.value()),
+                        )
+                    })?;
+                if type_ != ValueType::Text {
+                    return Err(source_error(
+                        DiagnosticCode::TYPE_MISMATCH,
+                        reference.span(),
+                        format!(
+                            "`{}` has type `{}` and cannot be emitted as text",
+                            reference.value(),
+                            type_.display_name()
+                        ),
+                    ));
+                }
+                lowered.push(CompiledPart::Value(value));
             }
             BodyPartSyntax::MessageCall(call) => {
                 return Err(source_error(
@@ -742,20 +1307,38 @@ fn lower_parts(
     Ok(lowered)
 }
 
-fn validate_call_arity(
-    modules: &[ModuleBuild<'_>],
-    offsets: &[usize],
+fn ensure_zero_arity(
     target: usize,
-    call: &crate::CallSyntax,
+    rule_parameters: &[Vec<(String, ValueType)>],
+    authored: &str,
+    span: Span,
 ) -> MecoResult<()> {
-    let (module, local) = locate_rule(offsets, target);
-    let parameters = &modules[module].syntax.rules[local].parameters;
+    if rule_parameters[target].is_empty() {
+        Ok(())
+    } else {
+        Err(source_error(
+            DiagnosticCode::RULE_ARITY,
+            span,
+            format!(
+                "rule `{authored}` requires {} named arguments",
+                rule_parameters[target].len()
+            ),
+        ))
+    }
+}
+
+fn compile_call_arguments(
+    call: &crate::CallSyntax,
+    parameters: &[(String, ValueType)],
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> MecoResult<Vec<CompiledValue>> {
     if parameters.len() != call.arguments.len()
-        || parameters.iter().any(|parameter| {
+        || parameters.iter().any(|(parameter, _)| {
             !call
                 .arguments
                 .iter()
-                .any(|argument| argument.name.value() == parameter.name.value())
+                .any(|argument| argument.name.value() == parameter)
         })
     {
         return Err(source_error(
@@ -768,18 +1351,373 @@ fn validate_call_arity(
             ),
         ));
     }
+    let mut compiled = Vec::with_capacity(parameters.len());
+    for (parameter, expected) in parameters {
+        let argument = call
+            .arguments
+            .iter()
+            .find(|argument| argument.name.value() == parameter)
+            .expect("arity validation found every named argument");
+        let (value, actual) = compile_argument_value(argument, scope, schemas)?;
+        if &actual != expected {
+            return Err(source_error(
+                DiagnosticCode::TYPE_MISMATCH,
+                argument.span,
+                format!(
+                    "argument `{parameter}` expects `{}` but received `{}`",
+                    expected.display_name(),
+                    actual.display_name()
+                ),
+            ));
+        }
+        compiled.push(value);
+    }
+    Ok(compiled)
+}
+
+fn compile_argument_value(
+    argument: &ArgumentSyntax,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> MecoResult<(CompiledValue, ValueType)> {
+    match &argument.value {
+        ValueSyntax::Reference(reference) => lookup_value(scope, schemas, reference.value())
+            .ok_or_else(|| {
+                source_error(
+                    DiagnosticCode::VALUE_NAME,
+                    reference.span(),
+                    format!("undefined value `{}`", reference.value()),
+                )
+            }),
+        ValueSyntax::Number(number) => Ok((
+            CompiledValue::Constant(Value::Number(*number.value())),
+            ValueType::Number,
+        )),
+        ValueSyntax::Text(text) => Ok((
+            CompiledValue::Constant(Value::Text(text.value().clone())),
+            ValueType::Text,
+        )),
+        ValueSyntax::Boolean(boolean) => Ok((
+            CompiledValue::Constant(Value::Boolean(*boolean.value())),
+            ValueType::Boolean,
+        )),
+    }
+}
+
+fn validate_bound_value_usage(
+    span: Span,
+    bindings: &[CompiledBinding],
+    parts: &[CompiledPart],
+) -> MecoResult<()> {
+    let mut used = Vec::new();
+    for binding in bindings {
+        for argument in &binding.arguments {
+            collect_local_value(argument, &mut used);
+        }
+    }
+    for part in parts {
+        match part {
+            CompiledPart::Value(value) => collect_local_value(value, &mut used),
+            CompiledPart::RuleCall { arguments, .. } => {
+                for argument in arguments {
+                    collect_local_value(argument, &mut used);
+                }
+            }
+            CompiledPart::Literal(_) | CompiledPart::Capture { .. } => {}
+        }
+    }
+    for (slot, name) in bindings
+        .iter()
+        .map(|binding| (binding.slot, binding.name.as_str()))
+        .chain(parts.iter().filter_map(|part| match part {
+            CompiledPart::Capture { slot, name, .. } => Some((*slot, name.as_str())),
+            _ => None,
+        }))
+    {
+        if !used.contains(&slot) {
+            return Err(source_error(
+                DiagnosticCode::BINDING_NAME,
+                span,
+                format!("bound value `{name}` is never used"),
+            ));
+        }
+    }
     Ok(())
 }
 
-fn locate_rule(offsets: &[usize], target: usize) -> (usize, usize) {
-    let module = offsets
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, offset)| **offset <= target)
-        .map(|(index, _)| index)
-        .expect("global rule has a module");
-    (module, target - offsets[module])
+fn collect_local_value(value: &CompiledValue, used: &mut Vec<usize>) {
+    if let CompiledValue::Local(slot) = value {
+        used.push(*slot);
+    }
+}
+
+fn compile_weight(
+    syntax: &WeightSyntax,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> MecoResult<CompiledWeight> {
+    match syntax {
+        WeightSyntax::Default => Ok(CompiledWeight::Static(Rational::ONE)),
+        WeightSyntax::Static(value) => Ok(CompiledWeight::Static(*value.value())),
+        WeightSyntax::Dynamic(expression) => Ok(CompiledWeight::Dynamic(
+            compile_weight_expression(expression.value(), scope, schemas, expression.span())?,
+        )),
+    }
+}
+
+fn compile_weight_expression(
+    expression: &WeightExpression,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    span: Span,
+) -> MecoResult<CompiledWeightExpression> {
+    match expression {
+        WeightExpression::Literal(value) => Ok(CompiledWeightExpression::Literal(*value)),
+        WeightExpression::Name(name) => {
+            let (value, type_) = lookup_value(scope, schemas, name).ok_or_else(|| {
+                source_error(
+                    DiagnosticCode::VALUE_NAME,
+                    span,
+                    format!("undefined dynamic-weight value `{name}`"),
+                )
+            })?;
+            if type_ != ValueType::Number {
+                return Err(source_error(
+                    DiagnosticCode::TYPE_MISMATCH,
+                    span,
+                    format!(
+                        "dynamic weight `{name}` must be `number`, not `{}`",
+                        type_.display_name()
+                    ),
+                ));
+            }
+            Ok(CompiledWeightExpression::Value(value))
+        }
+        WeightExpression::Add(left, right) => Ok(CompiledWeightExpression::Add(
+            Box::new(compile_weight_expression(left, scope, schemas, span)?),
+            Box::new(compile_weight_expression(right, scope, schemas, span)?),
+        )),
+        WeightExpression::Subtract(left, right) => Ok(CompiledWeightExpression::Subtract(
+            Box::new(compile_weight_expression(left, scope, schemas, span)?),
+            Box::new(compile_weight_expression(right, scope, schemas, span)?),
+        )),
+        WeightExpression::Multiply(left, right) => Ok(CompiledWeightExpression::Multiply(
+            Box::new(compile_weight_expression(left, scope, schemas, span)?),
+            Box::new(compile_weight_expression(right, scope, schemas, span)?),
+        )),
+    }
+}
+
+fn compile_guards(
+    clauses: &[ClauseSyntax],
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> MecoResult<Option<CompiledGuard>> {
+    let mut combined = None;
+    for clause in clauses {
+        let ClauseSyntax::Guard(guard) = clause else {
+            continue;
+        };
+        let next = compile_guard(guard.value(), scope, schemas, guard.span())?;
+        combined = Some(match combined {
+            None => next,
+            Some(previous) => CompiledGuard::And(Box::new(previous), Box::new(next)),
+        });
+    }
+    Ok(combined)
+}
+
+fn compile_guard(
+    expression: &GuardExpression,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    span: Span,
+) -> MecoResult<CompiledGuard> {
+    match expression {
+        GuardExpression::Value(value) => {
+            let (value, type_) = compile_known_guard_value(value, scope, schemas, span)?;
+            if type_ != ValueType::Boolean {
+                return Err(source_error(
+                    DiagnosticCode::TYPE_MISMATCH,
+                    span,
+                    "a standalone guard value must be boolean",
+                ));
+            }
+            Ok(CompiledGuard::Value(value))
+        }
+        GuardExpression::Is(left, right) => {
+            let (left, right, _) = compile_comparison_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::Is(left, right))
+        }
+        GuardExpression::IsNot(left, right) => {
+            let (left, right, _) = compile_comparison_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::IsNot(left, right))
+        }
+        GuardExpression::Less(left, right) => {
+            let (left, right) = compile_ordered_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::Less(left, right))
+        }
+        GuardExpression::LessOrEqual(left, right) => {
+            let (left, right) = compile_ordered_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::LessOrEqual(left, right))
+        }
+        GuardExpression::Greater(left, right) => {
+            let (left, right) = compile_ordered_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::Greater(left, right))
+        }
+        GuardExpression::GreaterOrEqual(left, right) => {
+            let (left, right) = compile_ordered_values(left, right, scope, schemas, span)?;
+            Ok(CompiledGuard::GreaterOrEqual(left, right))
+        }
+        GuardExpression::Not(value) => Ok(CompiledGuard::Not(Box::new(compile_guard(
+            value, scope, schemas, span,
+        )?))),
+        GuardExpression::And(left, right) => Ok(CompiledGuard::And(
+            Box::new(compile_guard(left, scope, schemas, span)?),
+            Box::new(compile_guard(right, scope, schemas, span)?),
+        )),
+        GuardExpression::Or(left, right) => Ok(CompiledGuard::Or(
+            Box::new(compile_guard(left, scope, schemas, span)?),
+            Box::new(compile_guard(right, scope, schemas, span)?),
+        )),
+    }
+}
+
+fn compile_ordered_values(
+    left: &GuardValue,
+    right: &GuardValue,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    span: Span,
+) -> MecoResult<(CompiledGuardValue, CompiledGuardValue)> {
+    let (left, right, type_) = compile_comparison_values(left, right, scope, schemas, span)?;
+    if type_ != ValueType::Number {
+        return Err(source_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            span,
+            format!("ordering requires numbers, not `{}`", type_.display_name()),
+        ));
+    }
+    Ok((left, right))
+}
+
+fn compile_comparison_values(
+    left: &GuardValue,
+    right: &GuardValue,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    span: Span,
+) -> MecoResult<(CompiledGuardValue, CompiledGuardValue, ValueType)> {
+    let left_known = try_compile_known_guard_value(left, scope, schemas);
+    let right_known = try_compile_known_guard_value(right, scope, schemas);
+    let (left_value, left_type, right_value, right_type) = match (left_known, right_known) {
+        (Some((left_value, left_type)), Some((right_value, right_type))) => {
+            (left_value, left_type, right_value, right_type)
+        }
+        (Some((left_value, left_type)), None) => {
+            let (right_value, right_type) = compile_enum_variant(right, &left_type, span)?;
+            (left_value, left_type, right_value, right_type)
+        }
+        (None, Some((right_value, right_type))) => {
+            let (left_value, left_type) = compile_enum_variant(left, &right_type, span)?;
+            (left_value, left_type, right_value, right_type)
+        }
+        (None, None) => {
+            return Err(source_error(
+                DiagnosticCode::VALUE_NAME,
+                span,
+                "guard comparison contains no declared value",
+            ));
+        }
+    };
+    if left_type != right_type {
+        return Err(source_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            span,
+            format!(
+                "guard compares `{}` with `{}`",
+                left_type.display_name(),
+                right_type.display_name()
+            ),
+        ));
+    }
+    Ok((left_value, right_value, left_type))
+}
+
+fn compile_known_guard_value(
+    value: &GuardValue,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+    span: Span,
+) -> MecoResult<(CompiledGuardValue, ValueType)> {
+    try_compile_known_guard_value(value, scope, schemas).ok_or_else(|| {
+        let GuardValue::Name(name) = value else {
+            unreachable!("all non-name guard values are known")
+        };
+        source_error(
+            DiagnosticCode::VALUE_NAME,
+            span,
+            format!("undefined guard value `{name}`"),
+        )
+    })
+}
+
+fn try_compile_known_guard_value(
+    value: &GuardValue,
+    scope: &CompileScope,
+    schemas: &[ModuleSchema],
+) -> Option<(CompiledGuardValue, ValueType)> {
+    match value {
+        GuardValue::Name(name) => lookup_value(scope, schemas, name)
+            .map(|(value, type_)| (CompiledGuardValue::Value(value), type_)),
+        GuardValue::Number(value) => Some((
+            CompiledGuardValue::Constant(Value::Number(*value)),
+            ValueType::Number,
+        )),
+        GuardValue::Boolean(value) => Some((
+            CompiledGuardValue::Constant(Value::Boolean(*value)),
+            ValueType::Boolean,
+        )),
+        GuardValue::Text(value) => Some((
+            CompiledGuardValue::Constant(Value::Text(value.clone())),
+            ValueType::Text,
+        )),
+    }
+}
+
+fn compile_enum_variant(
+    value: &GuardValue,
+    expected: &ValueType,
+    span: Span,
+) -> MecoResult<(CompiledGuardValue, ValueType)> {
+    let GuardValue::Name(variant) = value else {
+        return Err(source_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            span,
+            "guard values have incompatible types",
+        ));
+    };
+    let ValueType::Enum { variants, .. } = expected else {
+        return Err(source_error(
+            DiagnosticCode::VALUE_NAME,
+            span,
+            format!("undefined guard value `{variant}`"),
+        ));
+    };
+    if !variants.iter().any(|candidate| candidate == variant) {
+        return Err(source_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            span,
+            format!(
+                "`{variant}` is not a member of `{}`",
+                expected.display_name()
+            ),
+        ));
+    }
+    Ok((
+        CompiledGuardValue::Constant(Value::Enum(variant.clone())),
+        expected.clone(),
+    ))
 }
 
 fn resolve_rule(
@@ -847,38 +1785,39 @@ fn resolve_rule(
     Ok(offsets[target_module] + local)
 }
 
-fn normalize_static_weights(rule: &crate::RuleSyntax) -> MecoResult<Vec<u64>> {
-    let mut rationals = Vec::with_capacity(rule.productions.len());
-    for production in &rule.productions {
-        rationals.push(match &production.weight {
-            WeightSyntax::Default => Rational::ONE,
-            WeightSyntax::Static(weight) => *weight.value(),
-            WeightSyntax::Dynamic(weight) => {
-                return Err(source_error(
-                    DiagnosticCode::UNSUPPORTED_FEATURE,
-                    weight.span(),
-                    "dynamic weights are implemented in Milestone 5",
-                ));
-            }
-        });
-    }
+fn validate_static_weight_budget(span: Span, productions: &[CompiledProduction]) -> MecoResult<()> {
+    let Some(rationals) = productions
+        .iter()
+        .map(|production| match production.weight {
+            CompiledWeight::Static(value) => Some(value),
+            CompiledWeight::Dynamic(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(());
+    };
+    let _ = normalize_rationals(&rationals, Some(span))?;
+    Ok(())
+}
+
+fn normalize_rationals(rationals: &[Rational], source_span: Option<Span>) -> MecoResult<Vec<u64>> {
     let mut common_denominator = 1_u128;
-    for rational in &rationals {
+    for rational in rationals {
         let denominator = u128::from(rational.denominator());
         let divisor = gcd(common_denominator, denominator);
         common_denominator = common_denominator
             .checked_div(divisor)
             .and_then(|value| value.checked_mul(denominator))
-            .ok_or_else(|| weight_overflow(rule.span))?;
+            .ok_or_else(|| weight_overflow_at(source_span))?;
     }
     let mut scaled = Vec::with_capacity(rationals.len());
     for rational in rationals {
-        let numerator = u128::try_from(rational.numerator())
-            .expect("parser accepted only positive static weights");
+        let numerator =
+            u128::try_from(rational.numerator()).expect("eligible weights are positive");
         scaled.push(
             numerator
                 .checked_mul(common_denominator / u128::from(rational.denominator()))
-                .ok_or_else(|| weight_overflow(rule.span))?,
+                .ok_or_else(|| weight_overflow_at(source_span))?,
         );
     }
     let divisor = scaled.iter().copied().reduce(gcd).unwrap_or(1);
@@ -888,24 +1827,28 @@ fn normalize_static_weights(rule: &crate::RuleSyntax) -> MecoResult<Vec<u64>> {
         let value = value / divisor;
         total = total
             .checked_add(value)
-            .ok_or_else(|| weight_overflow(rule.span))?;
+            .ok_or_else(|| weight_overflow_at(source_span))?;
         normalized.push(value);
     }
     if total > i64::MAX as u128 {
-        return Err(weight_overflow(rule.span));
+        return Err(weight_overflow_at(source_span));
     }
     normalized
         .into_iter()
-        .map(|value| u64::try_from(value).map_err(|_| weight_overflow(rule.span)))
+        .map(|value| u64::try_from(value).map_err(|_| weight_overflow_at(source_span)))
         .collect()
 }
 
-fn weight_overflow(span: Span) -> MecoError {
-    source_error(
-        DiagnosticCode::WEIGHT_OVERFLOW,
-        span,
-        "a rule's scaled static weight total exceeds 2^63 - 1",
+fn weight_overflow_at(span: Option<Span>) -> MecoError {
+    let message = "a rule's scaled eligible weight total exceeds 2^63 - 1";
+    span.map_or_else(
+        || runtime_error(DiagnosticCode::WEIGHT_OVERFLOW, message),
+        |span| source_error(DiagnosticCode::WEIGHT_OVERFLOW, span, message),
     )
+}
+
+fn weight_runtime_overflow(message: &str) -> MecoError {
+    runtime_error(DiagnosticCode::WEIGHT_OVERFLOW, message)
 }
 
 const fn gcd(mut left: u128, mut right: u128) -> u128 {
@@ -917,15 +1860,291 @@ const fn gcd(mut left: u128, mut right: u128) -> u128 {
     left
 }
 
-fn select_production(productions: &[CompiledProduction], choice: u64) -> usize {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EligibleProduction {
+    production: usize,
+    base: Rational,
+    normalized: u64,
+}
+
+fn select_eligible_production(productions: &[EligibleProduction], choice: u64) -> usize {
     let mut cursor = choice;
-    for (index, production) in productions.iter().enumerate() {
-        if cursor < production.weight {
-            return index;
+    for production in productions {
+        if cursor < production.normalized {
+            return production.production;
         }
-        cursor -= production.weight;
+        cursor -= production.normalized;
     }
     unreachable!("choice is strictly below the checked weight total")
+}
+
+fn eligible_weights(
+    rule: &CompiledRule,
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<Vec<EligibleProduction>> {
+    let mut indexes = Vec::new();
+    let mut rationals = Vec::new();
+    for (index, production) in rule.productions.iter().enumerate() {
+        if let Some(guard) = &production.guard {
+            if !evaluate_guard(guard, inputs, locals)? {
+                continue;
+            }
+        }
+        let weight = evaluate_weight(&production.weight, inputs, locals)?;
+        if weight.numerator() < 0 {
+            return Err(runtime_error(
+                DiagnosticCode::WEIGHT_VALUE,
+                format!("dynamic weight in `{}` evaluated to {weight}", rule.name),
+            ));
+        }
+        if weight.is_zero() {
+            continue;
+        }
+        indexes.push(index);
+        rationals.push(weight);
+    }
+    if indexes.is_empty() {
+        return Err(runtime_error(
+            DiagnosticCode::NO_ELIGIBLE_PRODUCTION,
+            format!(
+                "rule `{}` has no eligible positive-weight production",
+                rule.name
+            ),
+        ));
+    }
+    let weights = normalize_rationals(&rationals, None)?;
+    Ok(indexes
+        .into_iter()
+        .zip(rationals)
+        .zip(weights)
+        .map(|((production, base), normalized)| EligibleProduction {
+            production,
+            base,
+            normalized,
+        })
+        .collect())
+}
+
+fn evaluate_weight(
+    weight: &CompiledWeight,
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<Rational> {
+    match weight {
+        CompiledWeight::Static(value) => Ok(*value),
+        CompiledWeight::Dynamic(expression) => {
+            evaluate_weight_expression(expression, inputs, locals)
+        }
+    }
+}
+
+fn evaluate_weight_expression(
+    expression: &CompiledWeightExpression,
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<Rational> {
+    match expression {
+        CompiledWeightExpression::Literal(value) => Ok(*value),
+        CompiledWeightExpression::Value(value) => {
+            let Value::Number(value) = runtime_value(value, inputs, locals)? else {
+                return Err(runtime_error(
+                    DiagnosticCode::TYPE_MISMATCH,
+                    "dynamic weight encountered a non-number value",
+                ));
+            };
+            Ok(value)
+        }
+        CompiledWeightExpression::Add(left, right) => {
+            evaluate_weight_expression(left, inputs, locals)?
+                .checked_add(evaluate_weight_expression(right, inputs, locals)?)
+                .map_err(|_| weight_runtime_overflow("dynamic weight addition overflowed"))
+        }
+        CompiledWeightExpression::Subtract(left, right) => {
+            evaluate_weight_expression(left, inputs, locals)?
+                .checked_sub(evaluate_weight_expression(right, inputs, locals)?)
+                .map_err(|_| weight_runtime_overflow("dynamic weight subtraction overflowed"))
+        }
+        CompiledWeightExpression::Multiply(left, right) => {
+            evaluate_weight_expression(left, inputs, locals)?
+                .checked_mul(evaluate_weight_expression(right, inputs, locals)?)
+                .map_err(|_| weight_runtime_overflow("dynamic weight multiplication overflowed"))
+        }
+    }
+}
+
+fn evaluate_guard(guard: &CompiledGuard, inputs: &[Value], locals: &[Value]) -> MecoResult<bool> {
+    match guard {
+        CompiledGuard::Value(value) => {
+            let Value::Boolean(value) = evaluate_guard_value(value, inputs, locals)? else {
+                return Err(runtime_error(
+                    DiagnosticCode::TYPE_MISMATCH,
+                    "guard encountered a non-boolean value",
+                ));
+            };
+            Ok(value)
+        }
+        CompiledGuard::Is(left, right) => Ok(evaluate_guard_value(left, inputs, locals)?
+            == evaluate_guard_value(right, inputs, locals)?),
+        CompiledGuard::IsNot(left, right) => Ok(evaluate_guard_value(left, inputs, locals)?
+            != evaluate_guard_value(right, inputs, locals)?),
+        CompiledGuard::Less(left, right) => {
+            compare_guard_numbers(left, right, inputs, locals).map(core::cmp::Ordering::is_lt)
+        }
+        CompiledGuard::LessOrEqual(left, right) => {
+            compare_guard_numbers(left, right, inputs, locals).map(core::cmp::Ordering::is_le)
+        }
+        CompiledGuard::Greater(left, right) => {
+            compare_guard_numbers(left, right, inputs, locals).map(core::cmp::Ordering::is_gt)
+        }
+        CompiledGuard::GreaterOrEqual(left, right) => {
+            compare_guard_numbers(left, right, inputs, locals).map(core::cmp::Ordering::is_ge)
+        }
+        CompiledGuard::Not(value) => Ok(!evaluate_guard(value, inputs, locals)?),
+        CompiledGuard::And(left, right) => {
+            Ok(evaluate_guard(left, inputs, locals)? && evaluate_guard(right, inputs, locals)?)
+        }
+        CompiledGuard::Or(left, right) => {
+            Ok(evaluate_guard(left, inputs, locals)? || evaluate_guard(right, inputs, locals)?)
+        }
+    }
+}
+
+fn evaluate_guard_value(
+    value: &CompiledGuardValue,
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<Value> {
+    match value {
+        CompiledGuardValue::Value(value) => runtime_value(value, inputs, locals),
+        CompiledGuardValue::Constant(value) => Ok(value.clone()),
+    }
+}
+
+fn compare_guard_numbers(
+    left: &CompiledGuardValue,
+    right: &CompiledGuardValue,
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<core::cmp::Ordering> {
+    let Value::Number(left) = evaluate_guard_value(left, inputs, locals)? else {
+        return Err(runtime_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            "ordered guard is not numeric",
+        ));
+    };
+    let Value::Number(right) = evaluate_guard_value(right, inputs, locals)? else {
+        return Err(runtime_error(
+            DiagnosticCode::TYPE_MISMATCH,
+            "ordered guard is not numeric",
+        ));
+    };
+    let left_scaled = i128::from(left.numerator()) * i128::from(right.denominator());
+    let right_scaled = i128::from(right.numerator()) * i128::from(left.denominator());
+    Ok(left_scaled.cmp(&right_scaled))
+}
+
+fn runtime_value(value: &CompiledValue, inputs: &[Value], locals: &[Value]) -> MecoResult<Value> {
+    match value {
+        CompiledValue::Input(index) => inputs.get(*index).cloned(),
+        CompiledValue::Local(index) => locals.get(*index).cloned(),
+        CompiledValue::Constant(value) => return Ok(value.clone()),
+    }
+    .ok_or_else(|| {
+        runtime_error(
+            DiagnosticCode::VALUE_NAME,
+            "runtime value slot is unavailable",
+        )
+    })
+}
+
+fn evaluate_arguments(
+    arguments: &[CompiledValue],
+    inputs: &[Value],
+    locals: &[Value],
+) -> MecoResult<Vec<Value>> {
+    arguments
+        .iter()
+        .map(|value| runtime_value(value, inputs, locals))
+        .collect()
+}
+
+fn bind_runtime_value(frame: &mut RuntimeFrame, slot: usize, value: Value) -> MecoResult<()> {
+    if frame.values.len() != slot {
+        return Err(runtime_error(
+            DiagnosticCode::BINDING_NAME,
+            "binding slot order is inconsistent with the compiled frame",
+        ));
+    }
+    frame.values.push(value);
+    Ok(())
+}
+
+fn validate_runtime_type(value: &Value, expected: &ValueType) -> Result<(), String> {
+    let valid = match (value, expected) {
+        (Value::Text(_), ValueType::Text)
+        | (Value::Number(_), ValueType::Number)
+        | (Value::Boolean(_), ValueType::Boolean) => true,
+        (Value::Enum(value), ValueType::Enum { variants, .. }) => {
+            variants.iter().any(|variant| variant == value)
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "expects `{}` but received `{}`",
+            expected.display_name(),
+            value.kind_name()
+        ))
+    }
+}
+
+fn append_output(
+    output: &mut String,
+    text: &str,
+    output_scalars: &mut u32,
+    limits: GenerationLimits,
+) -> MecoResult<()> {
+    let added = u32::try_from(text.chars().count()).map_err(|_| {
+        runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            "one literal exceeds the output scalar counter",
+        )
+    })?;
+    *output_scalars = output_scalars.checked_add(added).ok_or_else(|| {
+        runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            "generated output exceeds the scalar counter",
+        )
+    })?;
+    if *output_scalars > limits.max_output_scalars {
+        return Err(runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            format!(
+                "generated output exceeds {} Unicode scalars",
+                limits.max_output_scalars
+            ),
+        ));
+    }
+    let next_bytes = output.len().checked_add(text.len()).ok_or_else(|| {
+        runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            "generated output exceeds the byte counter",
+        )
+    })?;
+    if u32::try_from(next_bytes).map_or(true, |bytes| bytes > limits.max_output_bytes) {
+        return Err(runtime_error(
+            DiagnosticCode::LIMIT_OUTPUT,
+            format!(
+                "generated output exceeds {} UTF-8 bytes",
+                limits.max_output_bytes
+            ),
+        ));
+    }
+    output.push_str(text);
+    Ok(())
 }
 
 fn analyze_graph(rules: &mut [CompiledRule], entries: &[(String, usize)]) -> MecoResult<()> {
@@ -973,10 +2192,12 @@ fn graph_edges(rules: &[CompiledRule]) -> Vec<Vec<usize>> {
         .map(|rule| {
             rule.productions
                 .iter()
-                .flat_map(|production| production.parts.iter())
-                .filter_map(|part| match part {
-                    CompiledPart::Rule(rule) => Some(*rule),
-                    CompiledPart::Literal(_) => None,
+                .flat_map(|production| {
+                    production
+                        .bindings
+                        .iter()
+                        .map(|binding| binding.rule)
+                        .chain(production.parts.iter().filter_map(part_rule))
                 })
                 .collect()
         })
@@ -1000,21 +2221,28 @@ fn reachable_rules(edges: &[Vec<usize>], entries: &[(String, usize)]) -> Vec<boo
 }
 
 fn productive_rules(rules: &[CompiledRule], _edges: &[Vec<usize>]) -> Vec<bool> {
-    solve_monotone_rule_property(rules, |_| true)
+    solve_monotone_rule_property(rules, |_| true, true)
 }
 
 fn nullable_rules(rules: &[CompiledRule], _edges: &[Vec<usize>]) -> Vec<bool> {
-    solve_monotone_rule_property(rules, |production| {
-        production.parts.iter().all(|part| match part {
-            CompiledPart::Literal(text) => text.is_empty(),
-            CompiledPart::Rule(_) => true,
-        })
-    })
+    solve_monotone_rule_property(
+        rules,
+        |production| {
+            production.parts.iter().all(|part| match part {
+                CompiledPart::Literal(text) => text.is_empty(),
+                CompiledPart::RuleCall { .. }
+                | CompiledPart::Capture { .. }
+                | CompiledPart::Value(_) => true,
+            })
+        },
+        false,
+    )
 }
 
 fn solve_monotone_rule_property(
     rules: &[CompiledRule],
     candidate: impl Fn(&CompiledProduction) -> bool,
+    include_bindings: bool,
 ) -> Vec<bool> {
     let mut property = vec![false; rules.len()];
     let mut remaining = rules
@@ -1024,11 +2252,16 @@ fn solve_monotone_rule_property(
                 .iter()
                 .map(|production| {
                     if candidate(production) {
-                        production
+                        let body = production
                             .parts
                             .iter()
-                            .filter(|part| matches!(part, CompiledPart::Rule(_)))
-                            .count()
+                            .filter(|part| part_rule(part).is_some())
+                            .count();
+                        body + if include_bindings {
+                            production.bindings.len()
+                        } else {
+                            0
+                        }
                     } else {
                         usize::MAX
                     }
@@ -1042,9 +2275,14 @@ fn solve_monotone_rule_property(
             if remaining[rule][production] == usize::MAX {
                 continue;
             }
+            if include_bindings {
+                for binding in &compiled_production.bindings {
+                    reverse[binding.rule].push((rule, production));
+                }
+            }
             for part in &compiled_production.parts {
-                if let CompiledPart::Rule(child) = part {
-                    reverse[*child].push((rule, production));
+                if let Some(child) = part_rule(part) {
+                    reverse[child].push((rule, production));
                 }
             }
         }
@@ -1069,6 +2307,13 @@ fn solve_monotone_rule_property(
         }
     }
     property
+}
+
+fn part_rule(part: &CompiledPart) -> Option<usize> {
+    match part {
+        CompiledPart::RuleCall { rule, .. } | CompiledPart::Capture { rule, .. } => Some(*rule),
+        CompiledPart::Literal(_) | CompiledPart::Value(_) => None,
+    }
 }
 
 fn strongly_connected_components(edges: &[Vec<usize>]) -> Vec<usize> {
@@ -1129,24 +2374,48 @@ fn recursion_warnings(rules: &[CompiledRule]) -> Vec<Diagnostic> {
         if !rule.analysis.reachable || !rule.analysis.recursive {
             continue;
         }
-        let total = rule
+        if rule
             .productions
             .iter()
-            .map(|production| u128::from(production.weight))
+            .any(|production| production.guard.is_some())
+        {
+            continue;
+        }
+        let Some(rationals) = rule
+            .productions
+            .iter()
+            .map(|production| match production.weight {
+                CompiledWeight::Static(value) => Some(value),
+                CompiledWeight::Dynamic(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let Ok(weights) = normalize_rationals(&rationals, Some(rule.span)) else {
+            continue;
+        };
+        let total = weights
+            .iter()
+            .map(|weight| u128::from(*weight))
             .sum::<u128>();
         let offspring = rule
             .productions
             .iter()
-            .map(|production| {
-                let count = production
+            .zip(weights)
+            .map(|(production, weight)| {
+                let body_count = production
                     .parts
                     .iter()
-                    .filter(|part| {
-                        matches!(part, CompiledPart::Rule(child)
-                            if components[*child] == components[rule_index])
-                    })
+                    .filter_map(part_rule)
+                    .filter(|child| components[*child] == components[rule_index])
                     .count() as u128;
-                u128::from(production.weight) * count
+                let binding_count = production
+                    .bindings
+                    .iter()
+                    .filter(|binding| components[binding.rule] == components[rule_index])
+                    .count() as u128;
+                u128::from(weight) * (body_count + binding_count)
             })
             .sum::<u128>();
         if offspring >= total {
@@ -1174,10 +2443,13 @@ fn runtime_error(code: DiagnosticCode, message: impl Into<String>) -> MecoError 
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, string::ToString, vec};
+    use alloc::{format, string::ToString, vec, vec::Vec};
 
     use super::{GenerationLimits, GenerationRequest, compile_package};
-    use crate::{DiagnosticCode, PackageInput, PackageSource, SourceFile, SourceId};
+    use crate::{
+        DataBinding, DiagnosticCode, PackageInput, PackageSource, Rational, SourceFile, SourceId,
+        Value,
+    };
 
     fn package(source: &str) -> PackageInput {
         PackageInput {
@@ -1188,6 +2460,10 @@ mod tests {
                 resolved_imports: vec![],
             }],
         }
+    }
+
+    fn data(name: &str, value: Value) -> DataBinding {
+        DataBinding::new(name.to_string(), value)
     }
 
     #[test]
@@ -1224,6 +2500,9 @@ mod tests {
                 max_depth: 8,
                 ..GenerationLimits::default()
             },
+            data: &[],
+            trace_bindings: false,
+            trace_selections: false,
         };
         let error = grammar
             .generate_weighted(&request)
@@ -1257,6 +2536,164 @@ mod tests {
         let error = compile_package(&package).expect_err("wrong named argument must fail");
 
         assert_eq!(error.diagnostics()[0].code(), DiagnosticCode::RULE_ARITY);
+    }
+
+    #[test]
+    fn executes_typed_calls_guards_inputs_and_dynamic_weights() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\n",
+            "types:\n  Mood: [calm, tense]\n",
+            "inputs:\n  playerName: text\n  mood: Mood\n  urgency: number\n  enabled: boolean\n",
+            "exports: [start]\n---\n\n",
+            "# start\n- @greeting <- name: $playerName, tone: $mood, level: $urgency\n",
+            "# greeting <- name: text, tone: Mood, level: number\n",
+            "- [weight = level] {tone is tense and level >= 2} Alert, $name!\n",
+            "- [1] {tone is calm} Hello, $name.\n",
+        ));
+        let grammar = compile_package(&package).expect("typed package compiles");
+        let request_data = vec![
+            data("playerName", Value::Text("Ada".to_string())),
+            data("mood", Value::Enum("tense".to_string())),
+            data(
+                "urgency",
+                Value::Number(Rational::new(2, 1).expect("number")),
+            ),
+            data("enabled", Value::Boolean(true)),
+        ];
+        let result = grammar
+            .generate_weighted(&GenerationRequest {
+                data: &request_data,
+                trace_selections: true,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect("typed generation succeeds");
+
+        assert_eq!(result.text(), "Alert, Ada!");
+        let greeting = result
+            .selections()
+            .iter()
+            .find(|selection| selection.rule() == "root.greeting")
+            .expect("parameterized selection is traced");
+        assert_eq!(
+            greeting.eligible()[0].base_weight(),
+            Rational::new(2, 1).expect("valid trace weight")
+        );
+    }
+
+    #[test]
+    fn zero_dynamic_weight_and_false_guards_remove_productions() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\n",
+            "inputs:\n  urgency: number\n  enabled: boolean\n",
+            "exports: [start]\n---\n\n",
+            "# start\n",
+            "- [weight = urgency] dynamic\n",
+            "- [1] {enabled} enabled\n",
+            "- [1] {not enabled} fallback\n",
+        ));
+        let grammar = compile_package(&package).expect("dynamic package compiles");
+        let request_data = vec![
+            data("urgency", Value::Number(Rational::ZERO)),
+            data("enabled", Value::Boolean(false)),
+        ];
+        let result = grammar
+            .generate_weighted(&GenerationRequest {
+                data: &request_data,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect("one production remains");
+
+        assert_eq!(result.text(), "fallback");
+    }
+
+    #[test]
+    fn invalid_dynamic_weight_results_have_stable_runtime_codes() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\n",
+            "inputs:\n  weight: number\nexports: [start]\n---\n\n",
+            "# start\n- [weight = weight - 1] value\n",
+        ));
+        let grammar = compile_package(&package).expect("dynamic package compiles");
+        for (value, expected) in [
+            (Rational::ZERO, DiagnosticCode::WEIGHT_VALUE),
+            (Rational::ONE, DiagnosticCode::NO_ELIGIBLE_PRODUCTION),
+        ] {
+            let request_data = vec![data("weight", Value::Number(value))];
+            let error = grammar
+                .generate_weighted(&GenerationRequest {
+                    data: &request_data,
+                    ..GenerationRequest::with_seed(0)
+                })
+                .expect_err("invalid dynamic result fails");
+            assert_eq!(error.diagnostics()[0].code(), expected);
+        }
+    }
+
+    #[test]
+    fn bindings_and_captures_are_ordered_local_and_optionally_traced() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\nexports: [start]\n---\n\n",
+            "# start\n",
+            "- {name as hero}\n",
+            "  {name as companion}\n",
+            "  $hero/@{name as witness}/$witness/$companion\n",
+            "# name\n- Ada\n- Marcus\n- Priya\n",
+        ));
+        let grammar = compile_package(&package).expect("binding package compiles");
+        let result = grammar
+            .generate_weighted(&GenerationRequest {
+                trace_bindings: true,
+                ..GenerationRequest::with_seed(3)
+            })
+            .expect("binding generation succeeds");
+        let pieces = result.text().split('/').collect::<Vec<_>>();
+
+        assert_eq!(pieces.len(), 4);
+        assert_eq!(pieces[1], pieces[2]);
+        assert_eq!(result.bindings().len(), 3);
+        assert_eq!(result.bindings()[0].name(), "hero");
+        assert_eq!(result.bindings()[1].name(), "companion");
+        assert_eq!(result.bindings()[2].name(), "witness");
+        assert!(!result.bindings()[0].emitted());
+        assert!(result.bindings()[2].emitted());
+    }
+
+    #[test]
+    fn nested_calls_use_fresh_explicit_parameter_frames() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\nexports: [start]\n---\n\n",
+            "# start\n- @outer <- outerName: \"outer\", innerName: \"inner\"\n",
+            "# outer <- outerName: text, innerName: text\n",
+            "- @inner <- name: $innerName, outerName: $outerName\n",
+            "# inner <- name: text, outerName: text\n- $name/$outerName\n",
+        ));
+        let grammar = compile_package(&package).expect("parameter frames compile");
+        let result = grammar
+            .generate_weighted(&GenerationRequest::with_seed(0))
+            .expect("nested calls generate");
+
+        assert_eq!(result.text(), "inner/outer");
+    }
+
+    #[test]
+    fn request_data_and_call_types_are_checked() {
+        let package = package(concat!(
+            "---\nmeco: 2\nmodule: root\nentry: start\n",
+            "types:\n  Mood: [calm, tense]\ninputs:\n  mood: Mood\n",
+            "exports: [start]\n---\n\n",
+            "# start\n- @line <- tone: $mood\n",
+            "# line <- tone: Mood\n- {tone is tense} tense\n- {tone is calm} calm\n",
+        ));
+        let grammar = compile_package(&package).expect("enum package compiles");
+        let wrong = vec![data("mood", Value::Enum("unknown".to_string()))];
+        let error = grammar
+            .generate_weighted(&GenerationRequest {
+                data: &wrong,
+                ..GenerationRequest::with_seed(0)
+            })
+            .expect_err("unknown enum member fails request validation");
+
+        assert_eq!(error.diagnostics()[0].code(), DiagnosticCode::TYPE_MISMATCH);
     }
 
     #[test]

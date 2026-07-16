@@ -52,6 +52,36 @@ const routes = new Map<string, { path: URL; contentType: string }>([
       contentType: "text/plain; charset=utf-8",
     },
   ],
+  [
+    "/fixtures/milestone5/root.meco.md",
+    {
+      path: new URL(
+        "crates/mecojoni-core/tests/fixtures/packages/milestone5/root.meco.md",
+        workspace,
+      ),
+      contentType: "text/plain; charset=utf-8",
+    },
+  ],
+  [
+    "/fixtures/milestone5/common.meco.md",
+    {
+      path: new URL(
+        "crates/mecojoni-core/tests/fixtures/packages/milestone5/common.meco.md",
+        workspace,
+      ),
+      contentType: "text/plain; charset=utf-8",
+    },
+  ],
+  [
+    "/fixtures/expected/milestone5-seeds-v1.outputs",
+    {
+      path: new URL(
+        "crates/mecojoni-core/tests/fixtures/expected/milestone5-seeds-v1.outputs",
+        workspace,
+      ),
+      contentType: "text/plain; charset=utf-8",
+    },
+  ],
 ]);
 
 const port = Number(Deno.args[0] ?? "4517");
