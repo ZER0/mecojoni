@@ -862,6 +862,10 @@ byte; this proves comments, edge spaces, and block chomp semantics cannot change
 while style-changing rules remain deliberately unspecified. Full CLI details are
 in [the CLI guide](crates/mecojoni-cli/README.md).
 
+[`editors/vscode/`](editors/vscode/README.md) supplies an initial TextMate grammar
+and language configuration. Semantic diagnostics use `meco check`; an LSP
+transport is deferred until real editor synchronization requirements justify it.
+
 ## Tooling and implementation
 
 The primary implementation is Rust. Its core is `#![no_std]` plus `alloc`,
@@ -923,6 +927,7 @@ js/
   mecojoni.ts                Browser-neutral TypeScript wrapper
   mecojoni_test.ts           Normative Deno integration suite
   browser_smoke.*            Same-artifact browser integration harness
+editors/vscode/              TextMate grammar and editor configuration
 examples/                    Checked single- and multi-module examples
 docs/decisions/              Evidence-backed architecture decisions
 assets/                      Mecojoni logo
