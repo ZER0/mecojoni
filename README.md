@@ -85,7 +85,7 @@ localized message that will be rendered.
 | Default target | Required `@start` | Optional root `entry`; otherwise the host chooses an export |
 | References | `@rule` | `@rule`, with `@{rule}` for explicit boundaries and captures |
 | Empty output | `@empty` or `ε` | `""` |
-| Data-dependent weights | Not available | `[weight = expression]` over immutable numeric inputs and parameters |
+| Data-dependent weights | Not available | `[weight = expression]` over immutable numeric inputs/parameters; an evaluated zero excludes that production |
 | Literal `@` | `@@` | `\@`, quoted strings, or raw literals |
 | Comments | Whole-line `//` | Markdown comments: `<!-- ... -->` |
 | Inputs and types | Not available | Typed front-matter inputs and finite types |
@@ -115,6 +115,7 @@ inputs:
   playerName: text
   itemCount: number
   mood: Mood
+  urgency: number
 
 imports:
   common: "./common.meco"
@@ -277,6 +278,11 @@ exports: [pickup, greeting, warning]
 - [3] tired
 - [1] furious
 - [0.5] cautiously optimistic
+
+<!-- Dynamic weights use bare numeric names and are evaluated before selection. -->
+# urgency-reaction
+- [weight = urgency] The alarm is spreading.
+- [1] Everything is quiet.
 
 <!-- Empty output, optional text, and an explicitly delimited adjacent reference. -->
 # titled-greeting
@@ -554,8 +560,8 @@ contracts.
 
 ### Weights, empty output, and recursion
 
-Weights are positive relative base weights. Omitted weights are `1`, and decimals
-are valid:
+Static weights are positive relative base weights. Omitted weights are `1`, and
+decimals are valid:
 
 ```meco
 # mood
@@ -565,19 +571,28 @@ are valid:
 - [0.5] cautiously optimistic
 ```
 
-A dynamic weight may use an immutable numeric input or rule parameter. It is
-evaluated before selection; a value of zero makes that production ineligible.
+A dynamic weight may use an immutable numeric input or a numeric parameter of the
+current rule. It is evaluated after guards but before selection; zero makes that
+production ineligible. Use the bare value name inside weight metadata—`urgency`,
+not `$urgency`:
 
 ```meco
-# reaction <- urgency: number
+inputs:
+  urgency: number
+
+# reaction
 - [weight = urgency] The alarm is spreading.
 - [1] Everything is quiet.
 ```
 
-Dynamic weight expressions use bare names, as guards do. They may use decimal
-literals, number inputs/parameters, parentheses, `+`, `-`, and `*`; they cannot use
-captures, generated rules, messages, callbacks, clocks, or ambient state. This
-keeps the result deterministic and replayable.
+The same expression works with a declared rule parameter, such as
+`# reaction <- urgency: number`. Expressions may use decimal literals, numeric
+inputs/parameters, parentheses, `+`, `-`, and `*`; they cannot use captures,
+bindings, generated rules, messages, callbacks, clocks, or ambient state. A
+negative or overflowing evaluated value is a generation error, and if every
+guard-eligible production evaluates to zero, generation returns
+`E_NO_ELIGIBLE_PRODUCTION`. This keeps dynamic selection deterministic and
+replayable.
 
 Version `rational/1` evaluates those values exactly as reduced signed fractions:
 the absolute numerator and positive denominator are each at most `2^63 - 1`.
